@@ -90,7 +90,7 @@ The component manifest requires ESP-IDF 5.5 or later and the source uses the cur
 
 ## License
 
-No license has been selected yet. Add the license appropriate for your intended distribution before publishing the repository.
+Enviro8 is open-source software released under the [MIT License](LICENSE). You may use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software subject to the terms of that license.
 
 ## Production notes
 
