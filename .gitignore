@@ -1,0 +1,15 @@
+# ESP-IDF generated configuration and build output
+/build/
+/build2/
+/sdkconfig
+/sdkconfig.old
+/managed_components/
+/.git-work/
+/.gh-config/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
