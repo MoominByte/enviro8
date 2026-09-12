@@ -48,8 +48,12 @@
             padding: 16px;
             margin-bottom: 10px;
         }
-        .intro p { margin: 0 0 10px; }
-        .intro p:last-child { margin-bottom: 0; }
+        .intro p, .intro h3 { margin: 0 0 10px; }
+        .intro p:last-child, .intro ul:last-child { margin-bottom: 0; }
+        .intro h3 { font-size: 15px; margin-top: 16px; }
+        .intro h3:first-child { margin-top: 0; }
+        .intro ul { margin: 0 0 10px; padding-left: 20px; }
+        .intro li { margin: 3px 0; }
         details.op > summary {
             list-style: none;
             cursor: pointer;
@@ -134,6 +138,38 @@
     </main>
     <script>
         const $ = (id) => document.getElementById(id);
+
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function inlineMarkdown(text) {
+            return escapeHtml(text)
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>');
+        }
+
+        function renderMarkdown(text) {
+            const blocks = String(text || '').trim().split(/\n\n+/);
+            return blocks.map((block) => {
+                const lines = block.split('\n');
+                if (lines.every((line) => line.startsWith('- '))) {
+                    return `<ul>${lines.map((line) => `<li>${inlineMarkdown(line.slice(2))}</li>`).join('')}</ul>`;
+                }
+                if (lines.length > 1 && /^\*\*.+\*\*$/.test(lines[0])) {
+                    const title = inlineMarkdown(lines[0].replace(/^\*\*(.+)\*\*$/, '$1'));
+                    const rest = lines.slice(1);
+                    if (rest.every((line) => line.startsWith('- '))) {
+                        return `<h3>${title}</h3><ul>${rest.map((line) => `<li>${inlineMarkdown(line.slice(2))}</li>`).join('')}</ul>`;
+                    }
+                    return `<h3>${title}</h3><p>${rest.map(inlineMarkdown).join('<br>')}</p>`;
+                }
+                return `<p>${lines.map(inlineMarkdown).join('<br>')}</p>`;
+            }).join('');
+        }
 
         function exampleFromSchema(schema, spec, seen = new Set()) {
             if (!schema) return {};
@@ -226,7 +262,7 @@
                         <span class="muted">${operation.summary || ''}</span>
                     </summary>
                     <div class="body">
-                        <p>${(operation.description || '').replace(/\n/g, '<br>')}</p>
+                        <div>${renderMarkdown(operation.description || '')}</div>
                         ${renderParams(operation.parameters)}
                         ${tryForm(path, method, operation, spec)}
                     </div>
@@ -283,10 +319,7 @@
             try {
                 const spec = await fetch('/api/openapi.json').then((r) => r.json());
                 $('subtitle').textContent = `${spec.info.title} v${spec.info.version}`;
-                $('intro').innerHTML = spec.info.description
-                    .split('\n\n')
-                    .map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`)
-                    .join('');
+                $('intro').innerHTML = renderMarkdown(spec.info.description);
 
                 const groups = {};
                 for (const [path, methods] of Object.entries(spec.paths)) {
