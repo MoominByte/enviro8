@@ -8,9 +8,13 @@ The firmware is designed for installations where several sensors share the same 
 
 ![Enviro8 reference schematic](docs/schematic.svg)
 
+![Enviro8 prototype board](docs/pcb/pcb.jpg)
+
+![Enviro8 board with humidity and temperature probes](docs/pcb/pcb_and_probe.jpg)
+
 ## Hardware
 
-Diagrams: [wiring block diagram](docs/block-diagram.svg) and [reference schematic](docs/schematic.svg).
+Prototype photos: [PCB assembly](docs/pcb/pcb.jpg) and [board with probes](docs/pcb/pcb_and_probe.jpg). Diagrams: [wiring block diagram](docs/block-diagram.svg) and [reference schematic](docs/schematic.svg).
 
 | Signal | Default GPIO |
 |---|---:|
@@ -31,6 +35,14 @@ With no stored SSID, the device starts WPA2 access point **Enviro8-Setup**, pass
 
 Network changes are persisted immediately and applied after reboot. Channel changes apply to subsequent polls. Passwords are write-only in the API and are never returned. For deployment, change the factory AP password and consider adding API authentication/TLS appropriate to the threat model.
 
+## Web interface
+
+The dashboard at `/` shows live channel cards, per-channel sensor type and offsets, Wi-Fi / IPv4 settings, and device actions. Temperature can be displayed in °C, °F, or K. Interactive API documentation is at `/swagger` (also `/api/docs`); the OpenAPI spec is `/api/openapi.json`.
+
+![Enviro8 dashboard and settings](docs/screenshots/home_settings.jpg)
+
+![Enviro8 Swagger API documentation](docs/screenshots/swagger.jpg)
+
 ## Sensor behavior
 
 - `Auto` probes SHT4x, then SHT3x, then SHT2x and reports a family because Sensirion measurement protocols generally cannot prove an exact marketing model.
@@ -41,7 +53,7 @@ Network changes are persisted immediately and applied after reboot. Channel chan
 
 ## REST API
 
-All responses are JSON. Temperature is °C, humidity is %RH, offsets use the same units, and `lastReadMs` is monotonic milliseconds since boot.
+Try the endpoints from the onboard Swagger page at `/swagger` or see the screenshot above. All responses are JSON. Temperature is °C, humidity is %RH, offsets use the same units, and `lastReadMs` is monotonic milliseconds since boot.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -86,7 +98,10 @@ The component manifest requires ESP-IDF 5.5 or later and the source uses the cur
 - `sensor_manager.*` — TCA9548A and SHT4x/SHT3x/SHT2x protocols, polling/cache
 - `web_server.*` — embedded HTTP server and REST API
 - `www/index.html` — dependency-free responsive UI embedded in firmware
+- `www/swagger.html`, `www/openapi.json` — onboard API documentation
 - `app_main.c` — lifecycle and 10-second hardware reset gesture
+- `docs/pcb/` — prototype board and probe photos
+- `docs/screenshots/` — dashboard and Swagger captures
 
 ## License
 
