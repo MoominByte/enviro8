@@ -1,0 +1,381 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Enviro8 API",
+    "version": "1.1.0",
+    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Cet appareil Enviro8"
+    }
+  ],
+  "tags": [
+    { "name": "Sensors", "description": "Lectures en cache et détection" },
+    { "name": "Status", "description": "État du firmware et du Wi-Fi" },
+    { "name": "Config", "description": "Réseau et configuration des canaux" },
+    { "name": "Device", "description": "Redémarrage et reset usine" }
+  ],
+  "paths": {
+    "/api/v1/sensors": {
+      "get": {
+        "tags": ["Sensors"],
+        "summary": "Toutes les lectures",
+        "description": "Retourne les 8 canaux, en ligne ou hors ligne, avec les dernières valeurs en cache.",
+        "operationId": "listSensors",
+        "responses": {
+          "200": {
+            "description": "Tableau des 8 canaux",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/SensorReading" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sensors/{channel}": {
+      "get": {
+        "tags": ["Sensors"],
+        "summary": "Une lecture",
+        "description": "Lecture en cache d’un canal (1 à 8).",
+        "operationId": "getSensor",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "description": "Numéro de canal UI, 1–8 (port TCA 0–7).",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 8, "example": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lecture du canal",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SensorReading" }
+              }
+            }
+          },
+          "404": {
+            "description": "Canal hors plage",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "channel must be 1-8" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sensors/detect": {
+      "post": {
+        "tags": ["Sensors"],
+        "summary": "Relancer la détection",
+        "description": "Demande une détection (SHT3x, puis SHT4x, puis SHT2x) au prochain cycle de polling. Pas de corps.",
+        "operationId": "detectSensors",
+        "responses": {
+          "200": {
+            "description": "Détection planifiée",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" },
+                "example": { "ok": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "tags": ["Status"],
+        "summary": "État de l’appareil",
+        "description": "`networkMode` vaut `setup-ap` (SoftAP Enviro8-Setup) ou `station`. `wifiRssi` est 0 en SoftAP.",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "État courant",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Status" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/config": {
+      "get": {
+        "tags": ["Config"],
+        "summary": "Configuration complète",
+        "description": "Réseau (sans mot de passe) et types/offsets des 8 canaux.",
+        "operationId": "getConfig",
+        "responses": {
+          "200": {
+            "description": "Configuration persistée",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Config" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/config/network": {
+      "put": {
+        "tags": ["Config"],
+        "summary": "Mettre à jour le réseau",
+        "description": "Enregistre SSID, mot de passe optionnel, DHCP ou IPv4 statique. Un champ `password` vide ne change pas le mot de passe déjà stocké. **Reboot requis** pour appliquer.",
+        "operationId": "updateNetwork",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/NetworkUpdate" },
+              "examples": {
+                "dhcp": {
+                  "summary": "Station DHCP",
+                  "value": { "ssid": "Lab", "password": "secret", "dhcp": true }
+                },
+                "static": {
+                  "summary": "IPv4 statique",
+                  "value": {
+                    "ssid": "Lab",
+                    "password": "secret",
+                    "dhcp": false,
+                    "ip": "192.168.1.50",
+                    "gateway": "192.168.1.1",
+                    "netmask": "255.255.255.0",
+                    "dns": "8.8.8.8"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Enregistré, reboot nécessaire",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NetworkSaveResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON invalide",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "invalid JSON" }
+              }
+            }
+          },
+          "500": {
+            "description": "Échec d’écriture NVS",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "NVS write failed" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/config/channels": {
+      "put": {
+        "tags": ["Config"],
+        "summary": "Mettre à jour les canaux",
+        "description": "Accepte `{\"channels\":[...]}` ou un tableau brut. Chaque entrée doit avoir `channel` (1–8) et `type`. Déclenche une redétection. Appliqué au cycle suivant, sans reboot.",
+        "operationId": "updateChannels",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChannelsUpdate" },
+              "example": {
+                "channels": [
+                  { "channel": 1, "type": "SHT35", "temperatureOffset": -0.25, "humidityOffset": 1.2 },
+                  { "channel": 8, "type": "SHT35", "temperatureOffset": 0, "humidityOffset": 0 }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration mise à jour",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Config" }
+              }
+            }
+          },
+          "400": {
+            "description": "Tableau channels manquant",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "expected channels array" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reboot": {
+      "post": {
+        "tags": ["Device"],
+        "summary": "Redémarrer",
+        "description": "Répond puis redémarre l’ESP32-C6. Pas de corps.",
+        "operationId": "reboot",
+        "responses": {
+          "200": {
+            "description": "Redémarrage imminent",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RebootResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/factory-reset": {
+      "post": {
+        "tags": ["Device"],
+        "summary": "Reset usine",
+        "description": "Efface le namespace NVS applicatif (Wi-Fi et canaux) puis redémarre en SoftAP `Enviro8-Setup`. Irréversible. Pas de corps.",
+        "operationId": "factoryReset",
+        "responses": {
+          "200": {
+            "description": "Reset effectué, redémarrage imminent",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RebootResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SensorType": {
+        "type": "string",
+        "enum": ["Disabled", "Auto", "SHT45", "SHT41", "SHT40", "SHT35", "SHT31", "SHT30", "SHT20", "Other"]
+      },
+      "SensorFamily": {
+        "type": "string",
+        "enum": ["None", "SHT4x", "SHT3x", "SHT2x", "Other"]
+      },
+      "SensorReading": {
+        "type": "object",
+        "properties": {
+          "channel": { "type": "integer", "minimum": 1, "maximum": 8 },
+          "online": { "type": "boolean" },
+          "configuredType": { "$ref": "#/components/schemas/SensorType" },
+          "detectedFamily": { "$ref": "#/components/schemas/SensorFamily" },
+          "serialNumber": { "type": "string", "nullable": true, "description": "Numéro de série SHT4x, sinon null." },
+          "rawTemperature": { "type": "number", "nullable": true, "description": "°C avant offset" },
+          "rawHumidity": { "type": "number", "nullable": true, "description": "%RH avant offset" },
+          "temperature": { "type": "number", "nullable": true, "description": "°C après offset" },
+          "humidity": { "type": "number", "nullable": true, "description": "%RH après offset" },
+          "lastReadMs": { "type": "integer", "description": "Horloge monotone depuis le boot, 0 si jamais lu." },
+          "errorCount": { "type": "integer" },
+          "sampleCount": { "type": "integer" }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "firmwareVersion": { "type": "string", "example": "1.1.0" },
+          "uptimeSeconds": { "type": "integer" },
+          "wifiRssi": { "type": "integer", "description": "dBm en station, 0 en SoftAP" },
+          "networkMode": { "type": "string", "enum": ["setup-ap", "station"] }
+        }
+      },
+      "NetworkConfig": {
+        "type": "object",
+        "properties": {
+          "dhcp": { "type": "boolean" },
+          "ssid": { "type": "string" },
+          "ip": { "type": "string", "example": "192.168.1.50" },
+          "gateway": { "type": "string", "example": "192.168.1.1" },
+          "netmask": { "type": "string", "example": "255.255.255.0" },
+          "dns": { "type": "string", "example": "8.8.8.8" }
+        }
+      },
+      "NetworkUpdate": {
+        "allOf": [
+          { "$ref": "#/components/schemas/NetworkConfig" },
+          {
+            "type": "object",
+            "properties": {
+              "password": {
+                "type": "string",
+                "writeOnly": true,
+                "description": "Omis ou vide : conserve le mot de passe actuel."
+              }
+            }
+          }
+        ]
+      },
+      "ChannelConfig": {
+        "type": "object",
+        "required": ["channel", "type"],
+        "properties": {
+          "channel": { "type": "integer", "minimum": 1, "maximum": 8 },
+          "type": { "$ref": "#/components/schemas/SensorType" },
+          "temperatureOffset": { "type": "number", "description": "Ajouté à la température brute, °C" },
+          "humidityOffset": { "type": "number", "description": "Ajouté à l’humidité brute, %RH" }
+        }
+      },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "network": { "$ref": "#/components/schemas/NetworkConfig" },
+          "channels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ChannelConfig" }
+          }
+        }
+      },
+      "ChannelsUpdate": {
+        "type": "object",
+        "required": ["channels"],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ChannelConfig" }
+          }
+        }
+      },
+      "OkResponse": {
+        "type": "object",
+        "properties": { "ok": { "type": "boolean" } }
+      },
+      "NetworkSaveResponse": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "rebootRequired": { "type": "boolean" }
+        }
+      },
+      "RebootResponse": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "rebooting": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

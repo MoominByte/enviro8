@@ -1,12 +1,362 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Enviro8</title><style>
-:root{color-scheme:dark;--bg:#101417;--card:#192126;--line:#2b3940;--accent:#59d6a6;--muted:#9db0b8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#eef6f3;font:14px system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:24px}h1{font-size:28px;margin:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.pill{background:#20342d;color:var(--accent);padding:7px 12px;border-radius:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card,section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}.card.off{opacity:.55}.value{font-size:28px;font-weight:650;margin:10px 0}.meta{color:var(--muted);line-height:1.6}section{margin-top:16px}label{display:block;color:var(--muted);margin:8px 0 3px}input,select,button{width:100%;padding:9px;border-radius:7px;border:1px solid var(--line);background:#11181c;color:white}button{background:#28765d;border:0;font-weight:600;cursor:pointer;margin-top:12px}.danger{background:#803b3b}.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.channel{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}.actions{display:flex;gap:8px}.actions button{width:auto}small{color:var(--muted)}</style></head><body><main><header><div><h1>Enviro8</h1><small id="status">Connecting…</small></div><span class="pill">ESP32-C6</span></header><div id="cards" class="grid"></div>
-<section><h2>Channels</h2><div id="channels" class="grid"></div><button onclick="saveChannels()">Save channel settings</button></section>
-<section><h2>Network</h2><div class="cols"><div><label>Wi-Fi SSID</label><input id="ssid"><label>Password (leave unchanged if blank)</label><input id="password" type="password"></div><div><label><input id="dhcp" type="checkbox" style="width:auto"> Use DHCP</label><label>IP address</label><input id="ip"><label>Gateway</label><input id="gateway"></div><div><label>Netmask</label><input id="netmask"><label>DNS</label><input id="dns"></div></div><button onclick="saveNetwork()">Save network settings</button></section>
-<section><h2>Device</h2><div class="actions"><button onclick="post('/api/v1/sensors/detect')">Detect sensors</button><button onclick="post('/api/v1/reboot')">Reboot</button><button class="danger" onclick="resetDevice()">Factory reset</button></div></section></main><script>
-const types=['Disabled','Auto','SHT45','SHT41','SHT40','SHT35','SHT31','SHT30','SHT20','Other'];const $=x=>document.getElementById(x);async function api(url,opt){let r=await fetch(url,opt);if(!r.ok)throw Error(await r.text());return r.json()}function n(v,d=1){return typeof v==='number'?v.toFixed(d):'—'}
-async function refresh(){try{let [s,st]=await Promise.all([api('/api/v1/sensors'),api('/api/v1/status')]);$('status').textContent=`v${st.firmwareVersion} · ${st.networkMode} · uptime ${Math.floor(st.uptimeSeconds)}s · RSSI ${st.wifiRssi} dBm`;$('cards').innerHTML=s.map(x=>`<div class="card ${x.online?'':'off'}"><b>CH${x.channel} · ${x.configuredType}</b><div class="value">${n(x.temperature)} °C</div><div class="value">${n(x.humidity)} %RH</div><div class="meta">${x.detectedFamily} · ${x.online?'Online':'Offline'}<br>Raw ${n(x.rawTemperature)} °C / ${n(x.rawHumidity)} %<br>Samples ${x.sampleCount} · Errors ${x.errorCount}</div></div>`).join('')}catch(e){$('status').textContent=e.message}}
-async function loadConfig(){let c=await api('/api/v1/config'),v=c.network;for(let k of ['ssid','ip','gateway','netmask','dns'])$(k).value=v[k]||'';$('dhcp').checked=v.dhcp;$('channels').innerHTML=c.channels.map(x=>`<div class="channel" data-ch="${x.channel}"><b>CH${x.channel}</b><label>Sensor</label><select class="type">${types.map(t=>`<option ${t===x.type?'selected':''}>${t}</option>`).join('')}</select><label>Temperature offset °C</label><input class="to" type="number" step="0.01" value="${x.temperatureOffset}"><label>Humidity offset %RH</label><input class="ho" type="number" step="0.01" value="${x.humidityOffset}"></div>`).join('')}
-async function saveChannels(){let channels=[...document.querySelectorAll('.channel')].map(e=>({channel:+e.dataset.ch,type:e.querySelector('.type').value,temperatureOffset:+e.querySelector('.to').value,humidityOffset:+e.querySelector('.ho').value}));await api('/api/v1/config/channels',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({channels})});alert('Saved')}
-async function saveNetwork(){let b={dhcp:$('dhcp').checked,ssid:$('ssid').value,password:$('password').value,ip:$('ip').value,gateway:$('gateway').value,netmask:$('netmask').value,dns:$('dns').value};await api('/api/v1/config/network',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});alert('Saved. Reboot to apply.')}
-async function post(u){await api(u,{method:'POST'});setTimeout(refresh,1000)}async function resetDevice(){if(confirm('Erase configuration and reboot?'))await post('/api/v1/factory-reset')}loadConfig();refresh();setInterval(refresh,5000);
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Enviro8</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #101417;
+            --card: #192126;
+            --line: #2b3940;
+            --accent: #59d6a6;
+            --muted: #9db0b8;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: #eef6f3;
+            font: 14px system-ui, sans-serif;
+        }
+        main { max-width: 1100px; margin: auto; padding: 24px; }
+        h1 { font-size: 28px; margin: 0; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .unit-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted);
+            margin: 0;
+        }
+        .unit-picker select {
+            width: auto;
+            min-width: 72px;
+        }
+        .pill, a.pill {
+            background: #20342d;
+            color: var(--accent);
+            padding: 7px 12px;
+            border-radius: 20px;
+            text-decoration: none;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+        }
+        .card, section {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .card.off { opacity: .55; }
+        .value { font-size: 28px; font-weight: 650; margin: 10px 0; }
+        .meta { color: var(--muted); line-height: 1.6; }
+        section { margin-top: 16px; }
+        label { display: block; color: var(--muted); margin: 0 0 6px; }
+        .field { display: flex; flex-direction: column; min-width: 0; }
+        input, select, button {
+            width: 100%;
+            padding: 9px;
+            border-radius: 7px;
+            border: 1px solid var(--line);
+            background: #11181c;
+            color: white;
+        }
+        input:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+        button {
+            background: #28765d;
+            border: 0;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 12px;
+        }
+        .danger { background: #803b3b; }
+        .net-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px 16px;
+            align-items: start;
+        }
+        .net-dhcp {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            min-height: 38px;
+        }
+        .check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+            color: var(--muted);
+        }
+        .check input {
+            width: auto;
+            margin: 0;
+        }
+        .channel {
+            border-top: 1px solid var(--line);
+            padding-top: 10px;
+            margin-top: 10px;
+        }
+        .actions { display: flex; gap: 8px; }
+        .actions button { width: auto; }
+        small { color: var(--muted); }
+        @media (max-width: 700px) {
+            header { flex-wrap: wrap; }
+            .net-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div>
+                <h1>Enviro8</h1>
+                <small id="status">Connecting…</small>
+            </div>
+            <div class="header-actions">
+                <label class="unit-picker">
+                    Temperature
+                    <select id="tempUnit" aria-label="Temperature unit">
+                        <option value="C">°C</option>
+                        <option value="F">°F</option>
+                        <option value="K">K</option>
+                    </select>
+                </label>
+                <a class="pill" href="/swagger">API</a>
+                <span class="pill">ESP32-C6</span>
+            </div>
+        </header>
+        <div id="cards" class="grid"></div>
+        <section>
+            <h2>Channels</h2>
+            <div id="channels" class="grid"></div>
+            <button onclick="saveChannels()">Save channel settings</button>
+        </section>
+        <section>
+            <h2>Network</h2>
+            <div class="net-grid">
+                <div class="field">
+                    <label for="ssid">Wi-Fi SSID</label>
+                    <input id="ssid">
+                </div>
+                <div class="field">
+                    <label for="password">Password (leave unchanged if blank)</label>
+                    <input id="password" type="password">
+                </div>
+                <div class="net-dhcp">
+                    <label class="check">
+                        <input id="dhcp" type="checkbox">
+                        Use DHCP
+                    </label>
+                </div>
+                <div class="field">
+                    <label for="ip">IP address</label>
+                    <input id="ip" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="gateway">Gateway</label>
+                    <input id="gateway" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="netmask">Netmask</label>
+                    <input id="netmask" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="dns">DNS</label>
+                    <input id="dns" autocomplete="off">
+                </div>
+            </div>
+            <button onclick="saveNetwork()">Save network settings</button>
+        </section>
+        <section>
+            <h2>Device</h2>
+            <div class="actions">
+                <button onclick="post('/api/v1/sensors/detect')">Detect sensors</button>
+                <button onclick="post('/api/v1/reboot')">Reboot</button>
+                <button class="danger" onclick="resetDevice()">Factory reset</button>
+            </div>
+        </section>
+    </main>
+    <script>
+        const types = ['Disabled', 'Auto', 'SHT45', 'SHT41', 'SHT40', 'SHT35', 'SHT31', 'SHT30', 'SHT20', 'Other'];
+        const TEMP_UNIT_KEY = 'enviro8.tempUnit';
+        const STATIC_FIELDS = ['ip', 'gateway', 'netmask', 'dns'];
+        const $ = (id) => document.getElementById(id);
+
+        function currentTempUnit() {
+            return $('tempUnit').value || 'C';
+        }
+
+        function tempSuffix() {
+            const unit = currentTempUnit();
+            return unit === 'F' ? '°F' : unit === 'K' ? 'K' : '°C';
+        }
+
+        function convertTemp(celsius) {
+            if (typeof celsius !== 'number') {
+                return celsius;
+            }
+            const unit = currentTempUnit();
+            if (unit === 'F') {
+                return celsius * 9 / 5 + 32;
+            }
+            if (unit === 'K') {
+                return celsius + 273.15;
+            }
+            return celsius;
+        }
+
+        function syncDhcpFields() {
+            const dhcp = $('dhcp').checked;
+            for (const id of STATIC_FIELDS) {
+                $(id).disabled = dhcp;
+            }
+        }
+
+        async function api(url, opt) {
+            const response = await fetch(url, opt);
+            if (!response.ok) {
+                throw Error(await response.text());
+            }
+            return response.json();
+        }
+
+        function n(value, digits = 1) {
+            return typeof value === 'number' ? value.toFixed(digits) : '—';
+        }
+
+        async function refresh() {
+            try {
+                const [sensors, status] = await Promise.all([
+                    api('/api/v1/sensors'),
+                    api('/api/v1/status'),
+                ]);
+                const unit = tempSuffix();
+                $('status').textContent =
+                    `v${status.firmwareVersion} · ${status.networkMode} · uptime ${Math.floor(status.uptimeSeconds)}s · RSSI ${status.wifiRssi} dBm`;
+                $('cards').innerHTML = sensors.map((sensor) => `
+                    <div class="card ${sensor.online ? '' : 'off'}">
+                        <b>CH${sensor.channel} · ${sensor.configuredType}</b>
+                        <div class="value">${n(convertTemp(sensor.temperature), 2)} ${unit}</div>
+                        <div class="value">${n(sensor.humidity)} %RH</div>
+                        <div class="meta">
+                            ${sensor.detectedFamily} · ${sensor.online ? 'Online' : 'Offline'}<br>
+                            Raw ${n(convertTemp(sensor.rawTemperature), 2)} ${unit} / ${n(sensor.rawHumidity)} %<br>
+                            Samples ${sensor.sampleCount} · Errors ${sensor.errorCount}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                $('status').textContent = error.message;
+            }
+        }
+
+        async function loadConfig() {
+            try {
+                const config = await api('/api/v1/config');
+                const network = config.network;
+                $('ssid').value = network.ssid || '';
+                for (const key of STATIC_FIELDS) {
+                    $(key).value = network[key] || '';
+                }
+                $('dhcp').checked = network.dhcp;
+                $('channels').innerHTML = config.channels.map((channel) => `
+                    <div class="channel" data-ch="${channel.channel}">
+                        <b>CH${channel.channel}</b>
+                        <label>Sensor</label>
+                        <select class="type">${types.map((type) =>
+                            `<option ${type === channel.type ? 'selected' : ''}>${type}</option>`
+                        ).join('')}</select>
+                        <label>Temperature offset °C</label>
+                        <input class="to" type="number" step="0.01" value="${channel.temperatureOffset}">
+                        <label>Humidity offset %RH</label>
+                        <input class="ho" type="number" step="0.01" value="${channel.humidityOffset}">
+                    </div>
+                `).join('');
+            } catch (error) {
+                $('status').textContent = error.message;
+            }
+            syncDhcpFields();
+        }
+
+        async function saveChannels() {
+            const channels = [...document.querySelectorAll('.channel')].map((el) => ({
+                channel: +el.dataset.ch,
+                type: el.querySelector('.type').value,
+                temperatureOffset: +el.querySelector('.to').value,
+                humidityOffset: +el.querySelector('.ho').value,
+            }));
+            await api('/api/v1/config/channels', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channels }),
+            });
+            alert('Saved');
+        }
+
+        async function saveNetwork() {
+            const body = {
+                dhcp: $('dhcp').checked,
+                ssid: $('ssid').value,
+                password: $('password').value,
+                ip: $('ip').value,
+                gateway: $('gateway').value,
+                netmask: $('netmask').value,
+                dns: $('dns').value,
+            };
+            await api('/api/v1/config/network', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            alert('Saved. Reboot to apply.');
+        }
+
+        async function post(url) {
+            await api(url, { method: 'POST' });
+            setTimeout(refresh, 1000);
+        }
+
+        async function resetDevice() {
+            if (confirm('Erase configuration and reboot?')) {
+                await post('/api/v1/factory-reset');
+            }
+        }
+
+        const savedUnit = localStorage.getItem(TEMP_UNIT_KEY);
+        if (savedUnit === 'C' || savedUnit === 'F' || savedUnit === 'K') {
+            $('tempUnit').value = savedUnit;
+        }
+        $('tempUnit').addEventListener('change', () => {
+            localStorage.setItem(TEMP_UNIT_KEY, currentTempUnit());
+            refresh();
+        });
+        $('dhcp').addEventListener('change', syncDhcpFields);
+
+        loadConfig();
+        refresh();
+        setInterval(refresh, 1000);
+    </script>
+</body>
+</html>

@@ -1,30 +1,317 @@
 #include "web_server.h"
+
 #include <stdlib.h>
 #include <string.h>
+
 #include "app_config.h"
-#include "sensor_manager.h"
-#include "network.h"
 #include "cJSON.h"
+#include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
-#include "esp_check.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-extern const unsigned char index_html_start[] asm("_binary_index_html_start");extern const unsigned char index_html_end[] asm("_binary_index_html_end");
-static const char*TAG="web";
-static esp_err_t json_send(httpd_req_t*r,cJSON*j){char*s=cJSON_PrintUnformatted(j);httpd_resp_set_type(r,"application/json");httpd_resp_set_hdr(r,"Cache-Control","no-store");esp_err_t e=httpd_resp_sendstr(r,s);free(s);cJSON_Delete(j);return e;}
-static cJSON *reading_json(int i){sensor_reading_t s;sensor_manager_get(i,&s);cJSON*j=cJSON_CreateObject();cJSON_AddNumberToObject(j,"channel",i+1);cJSON_AddBoolToObject(j,"online",s.online);cJSON_AddStringToObject(j,"configuredType",sensor_type_name(s.configured));cJSON_AddStringToObject(j,"detectedFamily",sensor_family_name(s.family));if(s.serial[0])cJSON_AddStringToObject(j,"serialNumber",s.serial);else cJSON_AddNullToObject(j,"serialNumber");if(s.online){cJSON_AddNumberToObject(j,"rawTemperature",s.raw_temperature);cJSON_AddNumberToObject(j,"rawHumidity",s.raw_humidity);cJSON_AddNumberToObject(j,"temperature",s.temperature);cJSON_AddNumberToObject(j,"humidity",s.humidity);}else{cJSON_AddNullToObject(j,"rawTemperature");cJSON_AddNullToObject(j,"rawHumidity");cJSON_AddNullToObject(j,"temperature");cJSON_AddNullToObject(j,"humidity");}cJSON_AddNumberToObject(j,"lastReadMs",s.last_read_ms);cJSON_AddNumberToObject(j,"errorCount",s.error_count);cJSON_AddNumberToObject(j,"sampleCount",s.sample_count);return j;}
-static esp_err_t index_get(httpd_req_t*r){httpd_resp_set_type(r,"text/html");return httpd_resp_send(r,(const char*)index_html_start,index_html_end-index_html_start);}
-static esp_err_t sensors_get(httpd_req_t*r){cJSON*a=cJSON_CreateArray();for(int i=0;i<8;i++)cJSON_AddItemToArray(a,reading_json(i));return json_send(r,a);}
-static esp_err_t sensor_get(httpd_req_t*r){const char*p=strrchr(r->uri,'/');int ch=p?atoi(p+1):0;if(ch<1||ch>8){httpd_resp_send_err(r,HTTPD_404_NOT_FOUND,"channel must be 1-8");return ESP_OK;}return json_send(r,reading_json(ch-1));}
-static esp_err_t status_get(httpd_req_t*r){cJSON*j=cJSON_CreateObject();cJSON_AddStringToObject(j,"firmwareVersion",APP_VERSION);cJSON_AddNumberToObject(j,"uptimeSeconds",esp_timer_get_time()/1000000);cJSON_AddNumberToObject(j,"wifiRssi",network_rssi());cJSON_AddStringToObject(j,"networkMode",network_mode());return json_send(r,j);}
-static cJSON *config_json(void){app_config_t c;app_config_get(&c);cJSON*j=cJSON_CreateObject(),*n=cJSON_AddObjectToObject(j,"network"),*a=cJSON_AddArrayToObject(j,"channels");cJSON_AddBoolToObject(n,"dhcp",c.dhcp);cJSON_AddStringToObject(n,"ssid",c.ssid);cJSON_AddStringToObject(n,"ip",c.ip);cJSON_AddStringToObject(n,"gateway",c.gateway);cJSON_AddStringToObject(n,"netmask",c.netmask);cJSON_AddStringToObject(n,"dns",c.dns);for(int i=0;i<8;i++){cJSON*x=cJSON_CreateObject();cJSON_AddNumberToObject(x,"channel",i+1);cJSON_AddStringToObject(x,"type",sensor_type_name(c.channels[i].type));cJSON_AddNumberToObject(x,"temperatureOffset",c.channels[i].temp_offset);cJSON_AddNumberToObject(x,"humidityOffset",c.channels[i].humidity_offset);cJSON_AddItemToArray(a,x);}return j;}
-static esp_err_t config_get(httpd_req_t*r){return json_send(r,config_json());}
-static cJSON *body(httpd_req_t*r){if(r->content_len<=0||r->content_len>4096)return NULL;char*b=malloc(r->content_len+1);if(!b)return NULL;int n=httpd_req_recv(r,b,r->content_len);if(n<=0){free(b);return NULL;}b[n]=0;cJSON*j=cJSON_Parse(b);free(b);return j;}
-static void copystr(cJSON*j,const char*k,char*d,size_t n){cJSON*x=cJSON_GetObjectItemCaseSensitive(j,k);if(cJSON_IsString(x)){strncpy(d,x->valuestring,n-1);d[n-1]=0;}}
-static esp_err_t network_put(httpd_req_t*r){cJSON*j=body(r);if(!j){httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"invalid JSON");return ESP_OK;}app_config_t c;app_config_get(&c);cJSON*x=cJSON_GetObjectItem(j,"dhcp");if(cJSON_IsBool(x))c.dhcp=cJSON_IsTrue(x);copystr(j,"ssid",c.ssid,sizeof(c.ssid));x=cJSON_GetObjectItemCaseSensitive(j,"password");if(cJSON_IsString(x)&&x->valuestring[0])copystr(j,"password",c.password,sizeof(c.password));copystr(j,"ip",c.ip,sizeof(c.ip));copystr(j,"gateway",c.gateway,sizeof(c.gateway));copystr(j,"netmask",c.netmask,sizeof(c.netmask));copystr(j,"dns",c.dns,sizeof(c.dns));cJSON_Delete(j);esp_err_t e=app_config_save(&c);if(e){httpd_resp_send_err(r,HTTPD_500_INTERNAL_SERVER_ERROR,"NVS write failed");return ESP_OK;}cJSON*o=cJSON_CreateObject();cJSON_AddBoolToObject(o,"ok",true);cJSON_AddBoolToObject(o,"rebootRequired",true);return json_send(r,o);}
-static esp_err_t channels_put(httpd_req_t*r){cJSON*j=body(r);cJSON*a=cJSON_IsArray(j)?j:cJSON_GetObjectItem(j,"channels");if(!cJSON_IsArray(a)){cJSON_Delete(j);httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"expected channels array");return ESP_OK;}app_config_t c;app_config_get(&c);cJSON*x=NULL;cJSON_ArrayForEach(x,a){cJSON*cn=cJSON_GetObjectItem(x,"channel"),*ty=cJSON_GetObjectItem(x,"type"),*to=cJSON_GetObjectItem(x,"temperatureOffset"),*ho=cJSON_GetObjectItem(x,"humidityOffset");if(!cJSON_IsNumber(cn)||cn->valueint<1||cn->valueint>8||!cJSON_IsString(ty))continue;int i=cn->valueint-1;c.channels[i].type=sensor_type_parse(ty->valuestring);if(cJSON_IsNumber(to))c.channels[i].temp_offset=to->valuedouble;if(cJSON_IsNumber(ho))c.channels[i].humidity_offset=ho->valuedouble;}cJSON_Delete(j);app_config_save(&c);sensor_manager_detect();return json_send(r,config_json());}
-static esp_err_t action(httpd_req_t*r){if(strstr(r->uri,"detect")){sensor_manager_detect();httpd_resp_sendstr(r,"{\"ok\":true}");}else if(strstr(r->uri,"factory-reset")){app_config_factory_reset();httpd_resp_sendstr(r,"{\"ok\":true,\"rebooting\":true}");vTaskDelay(pdMS_TO_TICKS(200));esp_restart();}else{httpd_resp_sendstr(r,"{\"ok\":true,\"rebooting\":true}");vTaskDelay(pdMS_TO_TICKS(200));esp_restart();}return ESP_OK;}
-esp_err_t web_server_start(void){httpd_config_t c=HTTPD_DEFAULT_CONFIG();c.max_uri_handlers=12;c.uri_match_fn=httpd_uri_match_wildcard;httpd_handle_t h;ESP_RETURN_ON_ERROR(httpd_start(&h,&c),TAG,"start");httpd_uri_t u[]={ {.uri="/",.method=HTTP_GET,.handler=index_get},{.uri="/api/v1/sensors",.method=HTTP_GET,.handler=sensors_get},{.uri="/api/v1/sensors/*",.method=HTTP_GET,.handler=sensor_get},{.uri="/api/v1/status",.method=HTTP_GET,.handler=status_get},{.uri="/api/v1/config",.method=HTTP_GET,.handler=config_get},{.uri="/api/v1/config/network",.method=HTTP_PUT,.handler=network_put},{.uri="/api/v1/config/channels",.method=HTTP_PUT,.handler=channels_put},{.uri="/api/v1/sensors/detect",.method=HTTP_POST,.handler=action},{.uri="/api/v1/reboot",.method=HTTP_POST,.handler=action},{.uri="/api/v1/factory-reset",.method=HTTP_POST,.handler=action}};for(size_t i=0;i<sizeof(u)/sizeof(u[0]);i++)ESP_ERROR_CHECK(httpd_register_uri_handler(h,&u[i]));return ESP_OK;}
+#include "network.h"
+#include "sensor_manager.h"
+
+extern const unsigned char index_html_start[] asm("_binary_index_html_start");
+extern const unsigned char index_html_end[] asm("_binary_index_html_end");
+extern const unsigned char swagger_html_start[] asm("_binary_swagger_html_start");
+extern const unsigned char swagger_html_end[] asm("_binary_swagger_html_end");
+extern const unsigned char openapi_json_start[] asm("_binary_openapi_json_start");
+extern const unsigned char openapi_json_end[] asm("_binary_openapi_json_end");
+
+static const char *TAG = "web";
+
+static esp_err_t json_send(httpd_req_t *req, cJSON *json)
+{
+    char *payload = cJSON_PrintUnformatted(json);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_sendstr(req, payload);
+    free(payload);
+    cJSON_Delete(json);
+    return err;
+}
+
+static cJSON *reading_json(int channel)
+{
+    sensor_reading_t reading;
+    sensor_manager_get(channel, &reading);
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "channel", channel + 1);
+    cJSON_AddBoolToObject(json, "online", reading.online);
+    cJSON_AddStringToObject(json, "configuredType", sensor_type_name(reading.configured));
+    cJSON_AddStringToObject(json, "detectedFamily", sensor_family_name(reading.family));
+
+    if (reading.serial[0]) {
+        cJSON_AddStringToObject(json, "serialNumber", reading.serial);
+    } else {
+        cJSON_AddNullToObject(json, "serialNumber");
+    }
+
+    if (reading.online) {
+        cJSON_AddNumberToObject(json, "rawTemperature", reading.raw_temperature);
+        cJSON_AddNumberToObject(json, "rawHumidity", reading.raw_humidity);
+        cJSON_AddNumberToObject(json, "temperature", reading.temperature);
+        cJSON_AddNumberToObject(json, "humidity", reading.humidity);
+    } else {
+        cJSON_AddNullToObject(json, "rawTemperature");
+        cJSON_AddNullToObject(json, "rawHumidity");
+        cJSON_AddNullToObject(json, "temperature");
+        cJSON_AddNullToObject(json, "humidity");
+    }
+
+    cJSON_AddNumberToObject(json, "lastReadMs", (double)reading.last_read_ms);
+    cJSON_AddNumberToObject(json, "errorCount", reading.error_count);
+    cJSON_AddNumberToObject(json, "sampleCount", reading.sample_count);
+    return json;
+}
+
+static esp_err_t send_embedded(httpd_req_t *req, const char *type,
+                               const unsigned char *start, const unsigned char *end)
+{
+    httpd_resp_set_type(req, type);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)start, end - start);
+}
+
+static esp_err_t index_get(httpd_req_t *req)
+{
+    return send_embedded(req, "text/html", index_html_start, index_html_end);
+}
+
+static esp_err_t swagger_get(httpd_req_t *req)
+{
+    return send_embedded(req, "text/html", swagger_html_start, swagger_html_end);
+}
+
+static esp_err_t openapi_get(httpd_req_t *req)
+{
+    return send_embedded(req, "application/json", openapi_json_start, openapi_json_end);
+}
+
+static esp_err_t sensors_get(httpd_req_t *req)
+{
+    cJSON *array = cJSON_CreateArray();
+    for (int i = 0; i < APP_CHANNELS; i++) {
+        cJSON_AddItemToArray(array, reading_json(i));
+    }
+    return json_send(req, array);
+}
+
+static esp_err_t sensor_get(httpd_req_t *req)
+{
+    const char *slash = strrchr(req->uri, '/');
+    int channel = slash ? atoi(slash + 1) : 0;
+    if (channel < 1 || channel > APP_CHANNELS) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "channel must be 1-8");
+        return ESP_OK;
+    }
+    return json_send(req, reading_json(channel - 1));
+}
+
+static esp_err_t status_get(httpd_req_t *req)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "firmwareVersion", APP_VERSION);
+    cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddNumberToObject(json, "wifiRssi", network_rssi());
+    cJSON_AddStringToObject(json, "networkMode", network_mode());
+    return json_send(req, json);
+}
+
+static cJSON *config_json(void)
+{
+    app_config_t cfg;
+    app_config_get(&cfg);
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON *network = cJSON_AddObjectToObject(json, "network");
+    cJSON *channels = cJSON_AddArrayToObject(json, "channels");
+
+    cJSON_AddBoolToObject(network, "dhcp", cfg.dhcp);
+    cJSON_AddStringToObject(network, "ssid", cfg.ssid);
+    cJSON_AddStringToObject(network, "ip", cfg.ip);
+    cJSON_AddStringToObject(network, "gateway", cfg.gateway);
+    cJSON_AddStringToObject(network, "netmask", cfg.netmask);
+    cJSON_AddStringToObject(network, "dns", cfg.dns);
+
+    for (int i = 0; i < APP_CHANNELS; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "channel", i + 1);
+        cJSON_AddStringToObject(item, "type", sensor_type_name(cfg.channels[i].type));
+        cJSON_AddNumberToObject(item, "temperatureOffset", cfg.channels[i].temp_offset);
+        cJSON_AddNumberToObject(item, "humidityOffset", cfg.channels[i].humidity_offset);
+        cJSON_AddItemToArray(channels, item);
+    }
+    return json;
+}
+
+static esp_err_t config_get(httpd_req_t *req)
+{
+    return json_send(req, config_json());
+}
+
+static cJSON *body_json(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 4096) {
+        return NULL;
+    }
+
+    char *buf = malloc((size_t)req->content_len + 1);
+    if (!buf) {
+        return NULL;
+    }
+
+    int received = httpd_req_recv(req, buf, req->content_len);
+    if (received <= 0) {
+        free(buf);
+        return NULL;
+    }
+
+    buf[received] = '\0';
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+    return json;
+}
+
+static void copy_string(cJSON *json, const char *key, char *dst, size_t dst_len)
+{
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(json, key);
+    if (cJSON_IsString(item)) {
+        strncpy(dst, item->valuestring, dst_len - 1);
+        dst[dst_len - 1] = '\0';
+    }
+}
+
+static esp_err_t network_put(httpd_req_t *req)
+{
+    cJSON *json = body_json(req);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_OK;
+    }
+
+    app_config_t cfg;
+    app_config_get(&cfg);
+
+    cJSON *dhcp = cJSON_GetObjectItem(json, "dhcp");
+    if (cJSON_IsBool(dhcp)) {
+        cfg.dhcp = cJSON_IsTrue(dhcp);
+    }
+
+    copy_string(json, "ssid", cfg.ssid, sizeof(cfg.ssid));
+    cJSON *password = cJSON_GetObjectItemCaseSensitive(json, "password");
+    if (cJSON_IsString(password) && password->valuestring[0]) {
+        copy_string(json, "password", cfg.password, sizeof(cfg.password));
+    }
+    copy_string(json, "ip", cfg.ip, sizeof(cfg.ip));
+    copy_string(json, "gateway", cfg.gateway, sizeof(cfg.gateway));
+    copy_string(json, "netmask", cfg.netmask, sizeof(cfg.netmask));
+    copy_string(json, "dns", cfg.dns, sizeof(cfg.dns));
+    cJSON_Delete(json);
+
+    esp_err_t err = app_config_save(&cfg);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS write failed");
+        return ESP_OK;
+    }
+
+    cJSON *ok = cJSON_CreateObject();
+    cJSON_AddBoolToObject(ok, "ok", true);
+    cJSON_AddBoolToObject(ok, "rebootRequired", true);
+    return json_send(req, ok);
+}
+
+static esp_err_t channels_put(httpd_req_t *req)
+{
+    cJSON *json = body_json(req);
+    cJSON *array = cJSON_IsArray(json) ? json : cJSON_GetObjectItem(json, "channels");
+    if (!cJSON_IsArray(array)) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected channels array");
+        return ESP_OK;
+    }
+
+    app_config_t cfg;
+    app_config_get(&cfg);
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, array) {
+        cJSON *channel = cJSON_GetObjectItem(item, "channel");
+        cJSON *type = cJSON_GetObjectItem(item, "type");
+        cJSON *temp_offset = cJSON_GetObjectItem(item, "temperatureOffset");
+        cJSON *humidity_offset = cJSON_GetObjectItem(item, "humidityOffset");
+
+        if (!cJSON_IsNumber(channel) || channel->valueint < 1 || channel->valueint > APP_CHANNELS
+            || !cJSON_IsString(type)) {
+            continue;
+        }
+
+        int index = channel->valueint - 1;
+        cfg.channels[index].type = sensor_type_parse(type->valuestring);
+        if (cJSON_IsNumber(temp_offset)) {
+            cfg.channels[index].temp_offset = (float)temp_offset->valuedouble;
+        }
+        if (cJSON_IsNumber(humidity_offset)) {
+            cfg.channels[index].humidity_offset = (float)humidity_offset->valuedouble;
+        }
+    }
+
+    cJSON_Delete(json);
+    app_config_save(&cfg);
+    sensor_manager_detect();
+    return json_send(req, config_json());
+}
+
+static esp_err_t action_post(httpd_req_t *req)
+{
+    if (strstr(req->uri, "detect")) {
+        sensor_manager_detect();
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else if (strstr(req->uri, "factory-reset")) {
+        app_config_factory_reset();
+        httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    } else {
+        httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+    return ESP_OK;
+}
+
+esp_err_t web_server_start(void)
+{
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.max_uri_handlers = 16;
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
+
+    httpd_handle_t server;
+    ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "start");
+
+    const httpd_uri_t routes[] = {
+        {.uri = "/", .method = HTTP_GET, .handler = index_get},
+        {.uri = "/swagger", .method = HTTP_GET, .handler = swagger_get},
+        {.uri = "/api/docs", .method = HTTP_GET, .handler = swagger_get},
+        {.uri = "/api/openapi.json", .method = HTTP_GET, .handler = openapi_get},
+        {.uri = "/api/v1/sensors", .method = HTTP_GET, .handler = sensors_get},
+        {.uri = "/api/v1/sensors/*", .method = HTTP_GET, .handler = sensor_get},
+        {.uri = "/api/v1/status", .method = HTTP_GET, .handler = status_get},
+        {.uri = "/api/v1/config", .method = HTTP_GET, .handler = config_get},
+        {.uri = "/api/v1/config/network", .method = HTTP_PUT, .handler = network_put},
+        {.uri = "/api/v1/config/channels", .method = HTTP_PUT, .handler = channels_put},
+        {.uri = "/api/v1/sensors/detect", .method = HTTP_POST, .handler = action_post},
+        {.uri = "/api/v1/reboot", .method = HTTP_POST, .handler = action_post},
+        {.uri = "/api/v1/factory-reset", .method = HTTP_POST, .handler = action_post},
+    };
+
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &routes[i]));
+    }
+    return ESP_OK;
+}

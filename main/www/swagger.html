@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Enviro8 API</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #101417;
+            --card: #192126;
+            --line: #2b3940;
+            --accent: #59d6a6;
+            --muted: #9db0b8;
+            --get: #3d9d78;
+            --put: #3d7ebd;
+            --post: #c4893a;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: #eef6f3;
+            font: 14px/1.5 system-ui, sans-serif;
+        }
+        main { max-width: 980px; margin: auto; padding: 24px; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        h1 { font-size: 28px; margin: 0; }
+        h2 { font-size: 18px; margin: 28px 0 10px; }
+        a { color: var(--accent); text-decoration: none; }
+        small, .muted { color: var(--muted); }
+        .pill {
+            background: #20342d;
+            color: var(--accent);
+            padding: 7px 12px;
+            border-radius: 20px;
+        }
+        .intro, .op, .schema {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 10px;
+        }
+        .intro p { margin: 0 0 10px; }
+        .intro p:last-child { margin-bottom: 0; }
+        details.op > summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        details.op > summary::-webkit-details-marker { display: none; }
+        .method {
+            font-weight: 700;
+            font-size: 12px;
+            letter-spacing: .04em;
+            min-width: 58px;
+            text-align: center;
+            padding: 4px 8px;
+            border-radius: 6px;
+            color: #08120f;
+        }
+        .GET { background: var(--get); }
+        .PUT { background: var(--put); color: #071018; }
+        .POST { background: var(--post); color: #1a1206; }
+        .path { font-family: ui-monospace, Consolas, monospace; }
+        .body { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+        label { display: block; color: var(--muted); margin: 10px 0 4px; }
+        input, textarea, select, button {
+            width: 100%;
+            padding: 9px;
+            border-radius: 7px;
+            border: 1px solid var(--line);
+            background: #11181c;
+            color: white;
+            font: inherit;
+        }
+        textarea {
+            min-height: 140px;
+            font-family: ui-monospace, Consolas, monospace;
+            resize: vertical;
+        }
+        button {
+            width: auto;
+            background: #28765d;
+            border: 0;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 12px;
+            padding: 9px 16px;
+        }
+        button.danger { background: #803b3b; }
+        pre {
+            margin: 10px 0 0;
+            padding: 12px;
+            background: #11181c;
+            border-radius: 8px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+        .row .field { flex: 1; min-width: 140px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        th { color: var(--muted); font-weight: 600; }
+        code { font-family: ui-monospace, Consolas, monospace; }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div>
+                <h1>Enviro8 API</h1>
+                <small id="subtitle">Documentation OpenAPI</small>
+            </div>
+            <div>
+                <a class="pill" href="/">Tableau de bord</a>
+            </div>
+        </header>
+        <section class="intro" id="intro">Chargement de la spécification…</section>
+        <div id="ops"></div>
+        <h2>Modèles</h2>
+        <div id="schemas"></div>
+    </main>
+    <script>
+        const $ = (id) => document.getElementById(id);
+
+        function exampleFromSchema(schema, spec, seen = new Set()) {
+            if (!schema) return {};
+            if (schema.example !== undefined) return schema.example;
+            if (schema.$ref) {
+                const name = schema.$ref.split('/').pop();
+                if (seen.has(name)) return {};
+                seen.add(name);
+                return exampleFromSchema(spec.components.schemas[name], spec, seen);
+            }
+            if (schema.allOf) {
+                return Object.assign({}, ...schema.allOf.map((part) => exampleFromSchema(part, spec, seen)));
+            }
+            if (schema.type === 'array') {
+                return [exampleFromSchema(schema.items, spec, seen)];
+            }
+            if (schema.enum) return schema.enum[0];
+            if (schema.type === 'boolean') return true;
+            if (schema.type === 'integer' || schema.type === 'number') return schema.minimum || 0;
+            if (schema.type === 'string') return '';
+            if (schema.properties) {
+                const obj = {};
+                for (const [key, value] of Object.entries(schema.properties)) {
+                    if (value.writeOnly && key === 'password') {
+                        obj[key] = 'secret';
+                    } else if (!value.nullable) {
+                        obj[key] = exampleFromSchema(value, spec, seen);
+                    }
+                }
+                return obj;
+            }
+            return {};
+        }
+
+        function firstExample(content, spec) {
+            if (!content || !content['application/json']) return '';
+            const media = content['application/json'];
+            if (media.examples) {
+                return JSON.stringify(Object.values(media.examples)[0].value, null, 2);
+            }
+            if (media.example) return JSON.stringify(media.example, null, 2);
+            return JSON.stringify(exampleFromSchema(media.schema, spec), null, 2);
+        }
+
+        function schemaName(ref) {
+            return ref ? ref.split('/').pop() : '';
+        }
+
+        function renderParams(params) {
+            if (!params || !params.length) return '';
+            const rows = params.map((param) => `
+                <tr>
+                    <td><code>${param.name}</code> ${param.required ? '*' : ''}</td>
+                    <td>${param.in}</td>
+                    <td>${param.schema ? param.schema.type || '' : ''}</td>
+                    <td>${param.description || ''}</td>
+                </tr>
+            `).join('');
+            return `<table><thead><tr><th>Nom</th><th>Dans</th><th>Type</th><th>Description</th></tr></thead><tbody>${rows}</tbody></table>`;
+        }
+
+        function tryForm(path, method, operation, spec) {
+            const pathParam = (operation.parameters || []).find((param) => param.in === 'path');
+            const body = firstExample(operation.requestBody && operation.requestBody.content, spec);
+            const dangerous = path.includes('factory-reset') || path.includes('reboot');
+            return `
+                <div class="try">
+                    ${pathParam ? `
+                        <div class="field">
+                            <label>channel</label>
+                            <input class="path-param" type="number" min="1" max="8" value="1">
+                        </div>` : ''}
+                    ${body ? `
+                        <label>Corps JSON</label>
+                        <textarea class="req-body">${body}</textarea>` : ''}
+                    <button class="${dangerous ? 'danger' : ''}" data-try="${method} ${path}">
+                        Essayer
+                    </button>
+                    <pre class="result muted">En attente d’un appel…</pre>
+                </div>
+            `;
+        }
+
+        function renderOp(path, method, operation, spec) {
+            return `
+                <details class="op">
+                    <summary>
+                        <span class="method ${method}">${method}</span>
+                        <span class="path">${path}</span>
+                        <span class="muted">${operation.summary || ''}</span>
+                    </summary>
+                    <div class="body">
+                        <p>${(operation.description || '').replace(/\n/g, '<br>')}</p>
+                        ${renderParams(operation.parameters)}
+                        ${tryForm(path, method, operation, spec)}
+                    </div>
+                </details>
+            `;
+        }
+
+        function renderSchema(name, schema) {
+            const props = schema.properties || (schema.allOf && schema.allOf.find((part) => part.properties) || {}).properties;
+            if (!props) {
+                return `<div class="schema"><strong>${name}</strong><p class="muted">${schema.type || ''}</p></div>`;
+            }
+            const rows = Object.entries(props).map(([key, value]) => {
+                const type = value.$ref ? schemaName(value.$ref) : (value.type || '') + (value.nullable ? '?' : '');
+                return `<tr><td><code>${key}</code></td><td>${type}</td><td>${value.description || ''}</td></tr>`;
+            }).join('');
+            return `
+                <div class="schema">
+                    <strong>${name}</strong>
+                    <table><thead><tr><th>Champ</th><th>Type</th><th>Description</th></tr></thead><tbody>${rows}</tbody></table>
+                </div>
+            `;
+        }
+
+        async function callApi(method, path, button) {
+            const box = button.closest('.try');
+            const result = box.querySelector('.result');
+            const param = box.querySelector('.path-param');
+            const bodyEl = box.querySelector('.req-body');
+            let url = path;
+            if (param) url = path.replace('{channel}', param.value);
+            const opts = { method };
+            if (bodyEl && (method === 'PUT' || method === 'POST')) {
+                opts.headers = { 'Content-Type': 'application/json' };
+                opts.body = bodyEl.value;
+            }
+            if ((url.includes('reboot') || url.includes('factory-reset')) &&
+                !confirm('Cette action redémarre l’appareil. Continuer ?')) {
+                return;
+            }
+            result.textContent = 'Appel en cours…';
+            try {
+                const response = await fetch(url, opts);
+                const text = await response.text();
+                let pretty = text;
+                try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* keep raw */ }
+                result.textContent = `${response.status} ${response.statusText}\n\n${pretty}`;
+            } catch (error) {
+                result.textContent = error.message;
+            }
+        }
+
+        async function load() {
+            try {
+                const spec = await fetch('/api/openapi.json').then((r) => r.json());
+                $('subtitle').textContent = `${spec.info.title} v${spec.info.version}`;
+                $('intro').innerHTML = spec.info.description
+                    .split('\n\n')
+                    .map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`)
+                    .join('');
+
+                const groups = {};
+                for (const [path, methods] of Object.entries(spec.paths)) {
+                    for (const [method, operation] of Object.entries(methods)) {
+                        const tag = (operation.tags && operation.tags[0]) || 'API';
+                        groups[tag] = groups[tag] || [];
+                        groups[tag].push(renderOp(path, method.toUpperCase(), operation, spec));
+                    }
+                }
+                $('ops').innerHTML = Object.entries(groups)
+                    .map(([tag, ops]) => `<h2>${tag}</h2>${ops.join('')}`)
+                    .join('');
+
+                $('schemas').innerHTML = Object.entries(spec.components.schemas)
+                    .map(([name, schema]) => renderSchema(name, schema))
+                    .join('');
+
+                document.querySelectorAll('[data-try]').forEach((button) => {
+                    button.addEventListener('click', () => {
+                        const [method, ...rest] = button.dataset.try.split(' ');
+                        callApi(method, rest.join(' '), button);
+                    });
+                });
+            } catch (error) {
+                $('intro').textContent = 'Impossible de charger /api/openapi.json : ' + error.message;
+            }
+        }
+
+        load();
+    </script>
+</body>
+</html>
