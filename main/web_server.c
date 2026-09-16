@@ -21,6 +21,8 @@ extern const unsigned char swagger_html_start[] asm("_binary_swagger_html_start"
 extern const unsigned char swagger_html_end[] asm("_binary_swagger_html_end");
 extern const unsigned char openapi_json_start[] asm("_binary_openapi_json_start");
 extern const unsigned char openapi_json_end[] asm("_binary_openapi_json_end");
+extern const unsigned char debug_html_start[] asm("_binary_debug_html_start");
+extern const unsigned char debug_html_end[] asm("_binary_debug_html_end");
 
 static const char *TAG = "web";
 
@@ -67,6 +69,11 @@ static cJSON *reading_json(int channel)
     cJSON_AddNumberToObject(json, "lastReadMs", (double)reading.last_read_ms);
     cJSON_AddNumberToObject(json, "errorCount", reading.error_count);
     cJSON_AddNumberToObject(json, "sampleCount", reading.sample_count);
+    if (reading.last_error[0]) {
+        cJSON_AddStringToObject(json, "lastError", reading.last_error);
+    } else {
+        cJSON_AddNullToObject(json, "lastError");
+    }
     return json;
 }
 
@@ -91,6 +98,68 @@ static esp_err_t swagger_get(httpd_req_t *req)
 static esp_err_t openapi_get(httpd_req_t *req)
 {
     return send_embedded(req, "application/json", openapi_json_start, openapi_json_end);
+}
+
+static esp_err_t debug_page_get(httpd_req_t *req)
+{
+    return send_embedded(req, "text/html", debug_html_start, debug_html_end);
+}
+
+static void hex_addr(uint8_t addr, char *out)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    out[0] = '0';
+    out[1] = 'x';
+    out[2] = hex[addr >> 4];
+    out[3] = hex[addr & 0x0f];
+    out[4] = '\0';
+}
+
+static esp_err_t debug_get(httpd_req_t *req)
+{
+    static sensor_debug_event_t events[SENSOR_DEBUG_EVENT_MAX];
+    sensor_i2c_info_t i2c;
+    sensor_manager_i2c_info(&i2c);
+
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "firmwareVersion", APP_VERSION);
+    cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddNumberToObject(json, "uptimeMs", (double)(esp_timer_get_time() / 1000));
+
+    cJSON *bus = cJSON_AddObjectToObject(json, "i2c");
+    char mux_addr[5];
+    hex_addr(i2c.mux_addr, mux_addr);
+    cJSON_AddNumberToObject(bus, "freqHz", i2c.freq_hz);
+    cJSON_AddNumberToObject(bus, "sda", i2c.sda);
+    cJSON_AddNumberToObject(bus, "scl", i2c.scl);
+    cJSON_AddStringToObject(bus, "muxAddress", mux_addr);
+    cJSON_AddBoolToObject(bus, "muxPresent", i2c.mux_present);
+
+    cJSON *channels = cJSON_AddArrayToObject(json, "channels");
+    for (int i = 0; i < APP_CHANNELS; i++) {
+        cJSON_AddItemToArray(channels, reading_json(i));
+    }
+
+    int n = sensor_manager_debug_copy(events, SENSOR_DEBUG_EVENT_MAX);
+    cJSON *log = cJSON_AddArrayToObject(json, "events");
+    for (int i = 0; i < n; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "timeMs", (double)events[i].time_ms);
+        cJSON_AddNumberToObject(item, "channel", events[i].channel);
+        cJSON_AddNumberToObject(item, "addr", events[i].addr);
+        cJSON_AddStringToObject(item, "dir", events[i].dir);
+        cJSON_AddStringToObject(item, "op", events[i].op);
+        cJSON_AddStringToObject(item, "error", events[i].error);
+        cJSON_AddItemToArray(log, item);
+    }
+    return json_send(req, json);
+}
+
+static esp_err_t debug_clear(httpd_req_t *req)
+{
+    sensor_manager_debug_clear();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
 static esp_err_t sensors_get(httpd_req_t *req)
@@ -288,7 +357,8 @@ static esp_err_t action_post(httpd_req_t *req)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
+    cfg.stack_size = 8192;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
 
     httpd_handle_t server;
@@ -297,8 +367,11 @@ esp_err_t web_server_start(void)
     const httpd_uri_t routes[] = {
         {.uri = "/", .method = HTTP_GET, .handler = index_get},
         {.uri = "/swagger", .method = HTTP_GET, .handler = swagger_get},
+        {.uri = "/debug", .method = HTTP_GET, .handler = debug_page_get},
         {.uri = "/api/docs", .method = HTTP_GET, .handler = swagger_get},
         {.uri = "/api/openapi.json", .method = HTTP_GET, .handler = openapi_get},
+        {.uri = "/api/v1/debug", .method = HTTP_GET, .handler = debug_get},
+        {.uri = "/api/v1/debug/clear", .method = HTTP_POST, .handler = debug_clear},
         {.uri = "/api/v1/sensors", .method = HTTP_GET, .handler = sensors_get},
         {.uri = "/api/v1/sensors/*", .method = HTTP_GET, .handler = sensor_get},
         {.uri = "/api/v1/status", .method = HTTP_GET, .handler = status_get},

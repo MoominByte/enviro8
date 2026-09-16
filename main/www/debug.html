@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Enviro8 Debug</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #101417;
+            --card: #192126;
+            --line: #2b3940;
+            --accent: #59d6a6;
+            --muted: #9db0b8;
+            --bad: #e07a7a;
+            --ok: #59d6a6;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: #eef6f3;
+            font: 14px/1.5 system-ui, sans-serif;
+        }
+        main { max-width: 1100px; margin: auto; padding: 24px; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        h1 { font-size: 28px; margin: 0; }
+        h2 { font-size: 18px; margin: 24px 0 10px; }
+        a { color: var(--accent); text-decoration: none; }
+        small, .muted { color: var(--muted); }
+        .header-actions { display: flex; align-items: center; gap: 12px; }
+        .pill, a.pill {
+            background: #20342d;
+            color: var(--accent);
+            padding: 7px 12px;
+            border-radius: 20px;
+        }
+        .card, section {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .ok { border-color: #2b5a48; }
+        .bad { border-color: #6b3333; }
+        .off { opacity: .55; }
+        .status { font-weight: 650; }
+        .status.ok { color: var(--ok); }
+        .status.bad { color: var(--bad); }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+        th { color: var(--muted); font-weight: 600; }
+        code { font-family: ui-monospace, Consolas, monospace; }
+        button {
+            padding: 9px 16px;
+            border-radius: 7px;
+            border: 0;
+            background: #28765d;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .meta { color: var(--muted); margin: 6px 0 0; }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div>
+                <h1>Enviro8 Debug</h1>
+                <small id="status">Connexion…</small>
+            </div>
+            <div class="header-actions">
+                <a class="pill" href="/">Tableau de bord</a>
+                <a class="pill" href="/swagger">API</a>
+            </div>
+        </header>
+        <section id="i2c">Chargement du bus I²C…</section>
+        <h2>Canaux</h2>
+        <div id="channels" class="grid"></div>
+        <h2>Journal I²C</h2>
+        <div class="actions">
+            <button onclick="clearLog()">Effacer le journal</button>
+        </div>
+        <section>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Âge</th>
+                        <th>Canal</th>
+                        <th>Opération</th>
+                        <th>Sens</th>
+                        <th>Adresse</th>
+                        <th>Erreur</th>
+                    </tr>
+                </thead>
+                <tbody id="events">
+                    <tr><td colspan="6" class="muted">Aucun événement pour l’instant.</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+    <script>
+        const $ = (id) => document.getElementById(id);
+
+        function age(ms, nowMs) {
+            if (!ms) return '—';
+            const sec = Math.max(0, Math.floor((nowMs - ms) / 1000));
+            if (sec < 60) return `${sec}s`;
+            if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+            return `${Math.floor(sec / 3600)}h`;
+        }
+
+        async function refresh() {
+            try {
+                const data = await fetch('/api/v1/debug').then((r) => r.json());
+                const now = data.uptimeMs;
+                const i2c = data.i2c;
+                $('status').textContent =
+                    `v${data.firmwareVersion} · uptime ${Math.floor(data.uptimeSeconds)}s · journal ${data.events.length} événement(s)`;
+                $('i2c').innerHTML = `
+                    <strong>Bus I²C</strong>
+                    <p class="meta">
+                        ${i2c.freqHz / 1000} kHz · SDA GPIO${i2c.sda} · SCL GPIO${i2c.scl} ·
+                        mux ${i2c.muxAddress}
+                        <span class="status ${i2c.muxPresent ? 'ok' : 'bad'}">
+                            ${i2c.muxPresent ? 'présent' : 'absent'}
+                        </span>
+                    </p>
+                `;
+                $('channels').innerHTML = data.channels.map((ch) => {
+                    const problem = ch.configuredType !== 'Disabled' && !ch.online;
+                    const cls = ch.configuredType === 'Disabled' ? 'off' : (problem ? 'bad' : 'ok');
+                    return `
+                        <div class="card ${cls}">
+                            <b>CH${ch.channel}</b> · ${ch.configuredType}
+                            <div class="status ${problem ? 'bad' : 'ok'}">
+                                ${ch.configuredType === 'Disabled' ? 'Désactivé' : (ch.online ? 'En ligne' : 'Hors ligne')}
+                            </div>
+                            <div class="meta">
+                                ${ch.detectedFamily}<br>
+                                Samples ${ch.sampleCount} · Erreurs ${ch.errorCount}<br>
+                                Dernière lecture ${age(ch.lastReadMs, now)}<br>
+                                ${ch.lastError ? `Dernière erreur : ${ch.lastError}` : 'Pas d’erreur en cours'}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                if (!data.events.length) {
+                    $('events').innerHTML = '<tr><td colspan="6" class="muted">Aucun événement pour l’instant.</td></tr>';
+                } else {
+                    $('events').innerHTML = data.events.map((ev) => `
+                        <tr>
+                            <td>${age(ev.timeMs, now)}</td>
+                            <td>${ev.channel > 0 ? 'CH' + ev.channel : 'Bus'}</td>
+                            <td>${ev.op}</td>
+                            <td>${ev.dir}</td>
+                            <td><code>0x${ev.addr.toString(16).padStart(2, '0')}</code></td>
+                            <td>${ev.error}</td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (error) {
+                $('status').textContent = error.message;
+            }
+        }
+
+        async function clearLog() {
+            await fetch('/api/v1/debug/clear', { method: 'POST' });
+            refresh();
+        }
+
+        refresh();
+        setInterval(refresh, 1000);
+    </script>
+</body>
+</html>

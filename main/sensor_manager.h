@@ -26,9 +26,32 @@ typedef struct {
     uint32_t error_count;
     uint32_t sample_count;
     char serial[24];
+    char last_error[32];
 } sensor_reading_t;
+
+#define SENSOR_DEBUG_EVENT_MAX 32
+
+typedef struct {
+    uint64_t time_ms;
+    int channel;
+    uint8_t addr;
+    char dir[8];
+    char op[32];
+    char error[24];
+} sensor_debug_event_t;
+
+typedef struct {
+    int freq_hz;
+    int sda;
+    int scl;
+    uint8_t mux_addr;
+    bool mux_present;
+} sensor_i2c_info_t;
 
 esp_err_t sensor_manager_init(void);
 void sensor_manager_get(int channel, sensor_reading_t *out);
 void sensor_manager_detect(void);
 const char *sensor_family_name(sensor_family_t family);
+void sensor_manager_i2c_info(sensor_i2c_info_t *out);
+int sensor_manager_debug_copy(sensor_debug_event_t *out, int max);
+void sensor_manager_debug_clear(void);
