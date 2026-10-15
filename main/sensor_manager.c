@@ -473,6 +473,7 @@ static esp_err_t sample_channel(int channel, sensor_type_t type, sensor_reading_
          * shows up as a one-sample temperature spike.
          */
         if (!detect && out->family == FAMILY_SHT4X) {
+            family = FAMILY_SHT4X;
             err = read_sht45_at(channel, FAMILY_SHT4X, false, &temp, &humidity, serial, &addr);
         } else if (read_sht45_at(channel, FAMILY_SHT4X, detect, &temp, &humidity, serial, &addr) == ESP_OK) {
             family = FAMILY_SHT4X;

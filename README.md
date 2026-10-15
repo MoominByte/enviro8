@@ -97,7 +97,7 @@ The component manifest requires ESP-IDF 5.5 or later and the source uses the cur
 
 The 4 MB partition table has two 1.94 MB app slots (`ota_0`, `ota_1`) that share one NVS partition, so Wi-Fi, IP and channel settings survive updates. `nvs` and `phy_init` keep the offsets of the older factory-only layout, so the one-time USB flash that switches a unit to OTA keeps its settings too.
 
-Network updates need a token compiled into the firmware. Put it in the git-ignored `sdkconfig.defaults.local` before the first build (delete `sdkconfig` if it already exists so the defaults are reapplied):
+Network updates need a token (up to 128 characters) compiled into the firmware. Put it in the git-ignored `sdkconfig.defaults.local` before the first build (delete `sdkconfig` if it already exists so the defaults are reapplied):
 
 ```
 CONFIG_ENVIRO8_OTA_TOKEN="choose-a-long-secret"

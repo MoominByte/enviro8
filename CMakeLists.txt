@@ -5,7 +5,7 @@ if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults.local")
     set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.defaults.local")
 endif()
 
-set(PROJECT_VER "1.2.1")  # keep in sync with APP_VERSION in main/app_config.h
+set(PROJECT_VER "1.2.2")  # keep in sync with APP_VERSION in main/app_config.h
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(enviro8)

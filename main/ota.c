@@ -86,7 +86,8 @@ static esp_err_t fail(httpd_req_t *req, const char *status, const char *msg)
 
 static bool token_ok(httpd_req_t *req)
 {
-    char token[65] = {0};
+    /* Up to 128 characters; a longer header comes back truncated and fails. */
+    char token[129] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-OTA-Token", token, sizeof(token)) != ESP_OK) {
         return false;
     }
