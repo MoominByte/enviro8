@@ -419,8 +419,13 @@ static esp_err_t sample_channel(int channel, sensor_type_t type, sensor_reading_
          * unknown 0x44/0x45 device: 0x24 starts the SHT45 heater.
          * Do not use i2c_master_probe: a NACK leaves the IDF 5.5 bus in
          * ESP_ERR_INVALID_STATE and breaks every following channel.
+         * Once a channel is known to be SHT4x, a failed sample must not
+         * fall through to the SHT3x attempt: that pulses the heater and
+         * shows up as a one-sample temperature spike.
          */
-        if (read_sht45_at(channel, FAMILY_SHT4X, detect, &temp, &humidity, serial, &addr) == ESP_OK) {
+        if (!detect && out->family == FAMILY_SHT4X) {
+            err = read_sht45_at(channel, FAMILY_SHT4X, false, &temp, &humidity, serial, &addr);
+        } else if (read_sht45_at(channel, FAMILY_SHT4X, detect, &temp, &humidity, serial, &addr) == ESP_OK) {
             family = FAMILY_SHT4X;
             err = ESP_OK;
         } else if (read_sht45_at(channel, FAMILY_SHT3X, detect, &temp, &humidity, serial, &addr) == ESP_OK) {
