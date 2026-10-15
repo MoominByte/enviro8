@@ -48,7 +48,8 @@ The dashboard at `/` shows live channel cards, per-channel sensor type and offse
 - `Auto` probes SHT4x, then SHT3x, then SHT2x and reports a family because Sensirion measurement protocols generally cannot prove an exact marketing model.
 - Explicit models select the corresponding family driver. SHT45/SHT41/SHT40 map to SHT4x; SHT35/SHT31/SHT30 map to SHT3x; SHT20 maps to SHT2x.
 - `Other` is retained as configuration but has no generic measurement protocol, so it remains offline until a custom driver is added.
-- Each channel is selected exclusively through the TCA9548A. Readings are sampled about every five seconds and cached under a mutex.
+- Each channel is selected exclusively through the TCA9548A. Readings are sampled about every 1.3 seconds and cached under a mutex.
+- Reported temperature and humidity are a 10-second moving average. SHT3x/SHT4x noise is about 0.013 °C (1σ), enough to flip a 0.1 °F display every few seconds; the average brings that below 0.002 °C. It restarts after a read error, a detection pass or a change of sensor family.
 - SHT4x serial numbers are exposed when the serial command succeeds. Families without a consistently supported serial operation return `null`.
 
 ## REST API

@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Enviro8 API",
-    "version": "1.2.0",
-    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
+    "version": "1.2.1",
+    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). Température et humidité (brutes et corrigées) sont une moyenne glissante sur 10 s, remise à zéro après une erreur ou une redétection. `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
   },
   "servers": [
     {

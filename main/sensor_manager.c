@@ -18,6 +18,8 @@
 #define I2C_FREQ_HZ        400000
 #define I2C_TIMEOUT_MS     200
 #define POLL_INTERVAL_MS   1000
+#define AVG_WINDOW_MS      10000
+#define AVG_SLOTS          16
 #define TCA_ADDR           0x70
 #define SHT_ADDR_A         0x44
 #define SHT_ADDR_B         0x45
@@ -44,6 +46,53 @@ static uint8_t s_i2c_addr;
 static const char *s_i2c_op = "-";
 static bool s_i2c_quiet;
 static uint8_t s_ch_addr[APP_CHANNELS];
+
+/*
+ * Reported values are a 10 s moving average. SHT3x/SHT4x noise is about
+ * 0.013 °C (1 sigma), enough to flip a 0.1 °F display every few seconds.
+ */
+typedef struct {
+    uint64_t ms[AVG_SLOTS];
+    float temp[AVG_SLOTS];
+    float humidity[AVG_SLOTS];
+    int head;
+    int count;
+} avg_buf_t;
+
+static avg_buf_t s_avg[APP_CHANNELS];
+
+static void avg_reset(int channel)
+{
+    s_avg[channel].head = 0;
+    s_avg[channel].count = 0;
+}
+
+static void avg_push(int channel, uint64_t now_ms, float *temp, float *humidity)
+{
+    avg_buf_t *b = &s_avg[channel];
+    b->ms[b->head] = now_ms;
+    b->temp[b->head] = *temp;
+    b->humidity[b->head] = *humidity;
+    b->head = (b->head + 1) % AVG_SLOTS;
+    if (b->count < AVG_SLOTS) {
+        b->count++;
+    }
+
+    float t = 0.0f;
+    float h = 0.0f;
+    int n = 0;
+    for (int i = 0; i < b->count; i++) {
+        int idx = (b->head - 1 - i + AVG_SLOTS) % AVG_SLOTS;
+        if (now_ms - b->ms[idx] >= AVG_WINDOW_MS) {
+            break;
+        }
+        t += b->temp[idx];
+        h += b->humidity[idx];
+        n++;
+    }
+    *temp = t / n;
+    *humidity = h / n;
+}
 
 static void i2c_ctx(int channel, uint8_t addr, const char *op)
 {
@@ -478,13 +527,21 @@ static void poll_task(void *arg)
             xSemaphoreGive(s_lock);
 
             reading.configured = cfg.channels[i].type;
+            const sensor_family_t prev_family = reading.family;
             esp_err_t err = sample_channel(i, reading.configured, &reading, detect);
+
+            /* Never average across a gap or a different sensor. */
+            if (err != ESP_OK || !reading.online || detect || reading.family != prev_family) {
+                avg_reset(i);
+            }
             reading.online = (err == ESP_OK);
 
             if (err == ESP_OK) {
+                const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+                avg_push(i, now_ms, &reading.raw_temperature, &reading.raw_humidity);
                 reading.temperature = reading.raw_temperature + cfg.channels[i].temp_offset;
                 reading.humidity = reading.raw_humidity + cfg.channels[i].humidity_offset;
-                reading.last_read_ms = (uint64_t)(esp_timer_get_time() / 1000);
+                reading.last_read_ms = now_ms;
                 reading.sample_count++;
                 reading.last_error[0] = '\0';
                 if (detect) {
