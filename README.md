@@ -48,7 +48,8 @@ The dashboard at `/` shows live channel cards, per-channel sensor type and offse
 - `Auto` probes SHT4x, then SHT3x, then SHT2x and reports a family because Sensirion measurement protocols generally cannot prove an exact marketing model.
 - Explicit models select the corresponding family driver. SHT45/SHT41/SHT40 map to SHT4x; SHT35/SHT31/SHT30 map to SHT3x; SHT20 maps to SHT2x.
 - `Other` is retained as configuration but has no generic measurement protocol, so it remains offline until a custom driver is added.
-- Each channel is selected exclusively through the TCA9548A. Readings are sampled about every five seconds and cached under a mutex.
+- Each channel is selected exclusively through the TCA9548A. Readings are sampled about every 1.3 seconds and cached under a mutex.
+- Reported temperature and humidity are a 10-second moving average. SHT3x/SHT4x noise is about 0.013 °C (1σ), enough to flip a 0.1 °F display every few seconds; the average brings that below 0.002 °C. It restarts after a read error, a detection pass or a change of sensor family.
 - SHT4x serial numbers are exposed when the serial command succeeds. Families without a consistently supported serial operation return `null`.
 
 ## REST API
@@ -66,6 +67,7 @@ Try the endpoints from the onboard Swagger page at `/swagger` or see the screens
 | POST | `/api/v1/sensors/detect` | request detection on next poll |
 | POST | `/api/v1/reboot` | reboot |
 | POST | `/api/v1/factory-reset` | erase config and reboot |
+| POST | `/api/v1/firmware` | OTA update: raw `.bin` body, `X-OTA-Token` header |
 
 Example channel update:
 
@@ -89,7 +91,29 @@ idf.py build
 idf.py -p COM5 flash monitor
 ```
 
-The component manifest requires ESP-IDF 5.5 or later and the source uses the current `i2c_master` APIs, so it can also be compiled with 5.5 for transition testing. The custom 4 MB partition table allocates a 1.5 MB factory app and preserves ample space for later storage use.
+The component manifest requires ESP-IDF 5.5 or later and the source uses the current `i2c_master` APIs, so it can also be compiled with 5.5 for transition testing.
+
+### OTA updates
+
+The 4 MB partition table has two 1.94 MB app slots (`ota_0`, `ota_1`) that share one NVS partition, so Wi-Fi, IP and channel settings survive updates. `nvs` and `phy_init` keep the offsets of the older factory-only layout, so the one-time USB flash that switches a unit to OTA keeps its settings too.
+
+Network updates need a token (up to 128 characters) compiled into the firmware. To create or change it, see [docs/ota-token.md](docs/ota-token.md). Put it in the git-ignored `sdkconfig.defaults.local` before the first build (delete `sdkconfig` if it already exists so the defaults are reapplied):
+
+```
+CONFIG_ENVIRO8_OTA_TOKEN="choose-a-long-secret"
+```
+
+Then upload `build/enviro8.bin` from the debug page (`/debug`) or:
+
+```sh
+curl -X POST -H "X-OTA-Token: choose-a-long-secret" --data-binary @build/enviro8.bin http://<device-ip>/api/v1/firmware
+```
+
+The device writes the inactive slot, reboots into it, and confirms the new image once Wi-Fi gets an IP. If it crashes or is power-cycled before that, the bootloader returns to the previous image. `GET /api/v1/status` reports `firmwarePartition` and `firmwarePendingVerify`. Both slots read the same `app_config_t` blob, so a layout change needs a schema version and migration, or an update or rollback will reset the settings to defaults.
+
+### Backing up settings
+
+`tools/enviro8_backup.py` saves and restores the settings. Over USB (`backup --port COM5`) it dumps NVS, including the Wi-Fi password, and decodes it to JSON; over HTTP (`backup --ip <ip>`) it uses `/api/v1/config`, without the password. Backups go to the git-ignored `backups/` folder.
 
 ## Project structure
 
@@ -97,6 +121,8 @@ The component manifest requires ESP-IDF 5.5 or later and the source uses the cur
 - `network.*` — setup AP, DHCP/static station configuration, RSSI
 - `sensor_manager.*` — TCA9548A and SHT4x/SHT3x/SHT2x protocols, polling/cache
 - `web_server.*` — embedded HTTP server and REST API
+- `ota.*` — firmware upload endpoint and rollback confirmation
+- `tools/enviro8_backup.py` — settings backup and restore over USB or HTTP
 - `www/index.html` — dependency-free responsive UI embedded in firmware
 - `www/swagger.html`, `www/openapi.json` — onboard API documentation
 - `app_main.c` — lifecycle and 10-second hardware reset gesture
@@ -109,4 +135,4 @@ Enviro8 is open-source software released under the [MIT License](LICENSE). You m
 
 ## Production notes
 
-NVS blob compatibility currently follows the `app_config_t` layout. Add a schema version and migration before changing that layout in shipped products. Static IPv4 strings should be validated more strictly before accepting untrusted clients. Device-specific authentication, secure boot, flash encryption, OTA slots, HTTPS, and per-device AP credentials are intentionally deployment decisions rather than hard-coded assumptions.
+NVS blob compatibility currently follows the `app_config_t` layout. Add a schema version and migration before changing that layout in shipped products. Static IPv4 strings should be validated more strictly before accepting untrusted clients. Device-specific authentication, secure boot, flash encryption, signed OTA images, HTTPS, and per-device AP credentials are intentionally deployment decisions rather than hard-coded assumptions.

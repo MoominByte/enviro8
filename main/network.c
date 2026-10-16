@@ -72,7 +72,16 @@ static esp_err_t start_station(const app_config_t *cfg)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
-    return esp_wifi_start();
+    esp_err_t err = esp_wifi_start();
+    /*
+     * Modem sleep adds up to a beacon interval of latency per packet; on a
+     * weak link that turns into retries and HTTP timeouts. USB-powered, so
+     * keep the radio awake.
+     */
+    if (err == ESP_OK) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+    return err;
 }
 
 esp_err_t network_init(void)

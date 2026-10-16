@@ -1,0 +1,13 @@
+menu "Enviro8"
+
+    config ENVIRO8_OTA_TOKEN
+        string "Firmware upload token"
+        default ""
+        help
+            Shared secret required in the X-OTA-Token header of
+            POST /api/v1/firmware, at most 128 characters. Leave empty to
+            disable network updates.
+            Set it in sdkconfig.defaults.local (git-ignored) rather than in
+            the committed sdkconfig.defaults.
+
+endmenu

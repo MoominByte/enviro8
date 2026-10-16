@@ -5,7 +5,7 @@
 
 #include "esp_err.h"
 
-#define APP_VERSION     "1.1.0"
+#define APP_VERSION     "1.2.2"
 #define APP_AP_SSID     "Enviro8-Setup"
 #define APP_AP_PASSWORD "configureme"
 #define APP_CHANNELS    8

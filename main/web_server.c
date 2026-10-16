@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "network.h"
+#include "ota.h"
 #include "sensor_manager.h"
 
 extern const unsigned char index_html_start[] asm("_binary_index_html_start");
@@ -189,6 +190,8 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddNumberToObject(json, "wifiRssi", network_rssi());
     cJSON_AddStringToObject(json, "networkMode", network_mode());
+    cJSON_AddStringToObject(json, "firmwarePartition", ota_running_partition());
+    cJSON_AddBoolToObject(json, "firmwarePendingVerify", ota_pending_verify());
     return json_send(req, json);
 }
 
@@ -360,6 +363,19 @@ esp_err_t web_server_start(void)
     cfg.max_uri_handlers = 20;
     cfg.stack_size = 8192;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
+    /*
+     * Pollers (Node-RED) keep a keep-alive pool open, and clients on weak
+     * Wi-Fi vanish without a FIN. Without these, dead sockets pile up until
+     * every slot is taken and the device stops answering until a reboot.
+     */
+    cfg.max_open_sockets = 12;
+    cfg.lru_purge_enable = true;
+    cfg.keep_alive_enable = true;
+    cfg.keep_alive_idle = 30;
+    cfg.keep_alive_interval = 5;
+    cfg.keep_alive_count = 3;
+    cfg.recv_wait_timeout = 10;
+    cfg.send_wait_timeout = 10;
 
     httpd_handle_t server;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "start");
@@ -381,6 +397,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/sensors/detect", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/reboot", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/factory-reset", .method = HTTP_POST, .handler = action_post},
+        {.uri = "/api/v1/firmware", .method = HTTP_POST, .handler = ota_upload_handler},
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

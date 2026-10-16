@@ -72,7 +72,16 @@
             font-weight: 600;
             cursor: pointer;
         }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        input {
+            padding: 8px 10px;
+            border-radius: 7px;
+            border: 1px solid var(--line);
+            background: var(--bg);
+            color: inherit;
+            font: inherit;
+        }
+        button:disabled { opacity: .5; cursor: default; }
         .meta { color: var(--muted); margin: 6px 0 0; }
     </style>
 </head>
@@ -89,6 +98,15 @@
             </div>
         </header>
         <section id="i2c">Chargement du bus I²C…</section>
+        <h2>Mise à jour firmware</h2>
+        <section>
+            <div class="actions">
+                <input id="fwFile" type="file" accept=".bin">
+                <input id="fwToken" type="password" placeholder="Jeton OTA" autocomplete="off">
+                <button id="fwBtn" onclick="uploadFirmware()">Téléverser</button>
+            </div>
+            <p id="fwStatus" class="meta">Fichier <code>build/enviro8.bin</code>. L’appareil redémarre sur la nouvelle version ; sans Wi-Fi au démarrage, il revient à l’ancienne au redémarrage suivant.</p>
+        </section>
         <h2>Canaux</h2>
         <div id="channels" class="grid"></div>
         <h2>Journal I²C</h2>
@@ -183,8 +201,45 @@
             refresh();
         }
 
+        let uploading = false;
+
+        function uploadFirmware() {
+            const file = $('fwFile').files[0];
+            if (!file) {
+                $('fwStatus').textContent = 'Choisir un fichier .bin.';
+                return;
+            }
+            uploading = true;
+            $('fwBtn').disabled = true;
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/v1/firmware');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.setRequestHeader('X-OTA-Token', $('fwToken').value);
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    $('fwStatus').textContent = `Envoi… ${Math.round(e.loaded * 100 / e.total)} %`;
+                }
+            };
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    $('fwStatus').textContent = 'Écrit. Redémarrage… la page se recharge dans 20 s.';
+                    setTimeout(() => location.reload(), 20000);
+                    return;
+                }
+                $('fwStatus').textContent = `Échec (${xhr.status}) : ${xhr.responseText}`;
+                uploading = false;
+                $('fwBtn').disabled = false;
+            };
+            xhr.onerror = () => {
+                $('fwStatus').textContent = 'Connexion perdue pendant l’envoi.';
+                uploading = false;
+                $('fwBtn').disabled = false;
+            };
+            xhr.send(file);
+        }
+
         refresh();
-        setInterval(refresh, 1000);
+        setInterval(() => { if (!uploading) refresh(); }, 1000);
     </script>
 </body>
 </html>

@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Enviro8 API",
-    "version": "1.1.0",
-    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
+    "version": "1.2.2",
+    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). Température et humidité (brutes et corrigées) sont une moyenne glissante sur 10 s, remise à zéro après une erreur ou une redétection. `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
   },
   "servers": [
     {
@@ -15,7 +15,7 @@
     { "name": "Sensors", "description": "Lectures en cache et détection" },
     { "name": "Status", "description": "État du firmware et du Wi-Fi" },
     { "name": "Config", "description": "Réseau et configuration des canaux" },
-    { "name": "Device", "description": "Redémarrage et reset usine" }
+    { "name": "Device", "description": "Redémarrage, reset usine et mise à jour firmware" }
   ],
   "paths": {
     "/api/v1/sensors": {
@@ -264,6 +264,44 @@
           }
         }
       }
+    },
+    "/api/v1/firmware": {
+      "post": {
+        "tags": ["Device"],
+        "summary": "Mise à jour firmware (OTA)",
+        "description": "Corps : le fichier `enviro8.bin` brut. Écrit dans le slot OTA libre, puis redémarre dessus. La nouvelle version se confirme quand le Wi-Fi obtient une IP ; sinon le bootloader revient à l’ancienne au redémarrage suivant. Les réglages (NVS) sont conservés. Désactivé si le firmware est compilé sans `CONFIG_ENVIRO8_OTA_TOKEN`.",
+        "operationId": "uploadFirmware",
+        "parameters": [
+          {
+            "name": "X-OTA-Token",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": { "type": "string", "format": "binary" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Image écrite, redémarrage imminent",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RebootResponse" }
+              }
+            }
+          },
+          "400": { "description": "Image invalide, trop grosse ou d’un autre projet" },
+          "401": { "description": "Jeton absent ou incorrect" },
+          "403": { "description": "OTA désactivée (pas de jeton compilé)" },
+          "500": { "description": "Envoi interrompu ou écriture flash échouée" }
+        }
+      }
     }
   },
   "components": {
@@ -299,7 +337,9 @@
           "firmwareVersion": { "type": "string", "example": "1.1.0" },
           "uptimeSeconds": { "type": "integer" },
           "wifiRssi": { "type": "integer", "description": "dBm en station, 0 en SoftAP" },
-          "networkMode": { "type": "string", "enum": ["setup-ap", "station"] }
+          "networkMode": { "type": "string", "enum": ["setup-ap", "station"] },
+          "firmwarePartition": { "type": "string", "enum": ["ota_0", "ota_1"] },
+          "firmwarePendingVerify": { "type": "boolean", "description": "Vrai juste après une mise à jour, jusqu’à la confirmation" }
         }
       },
       "NetworkConfig": {

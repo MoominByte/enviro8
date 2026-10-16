@@ -1,5 +1,6 @@
 #include "app_config.h"
 #include "network.h"
+#include "ota.h"
 #include "sensor_manager.h"
 #include "web_server.h"
 
@@ -48,6 +49,7 @@ void app_main(void)
     ESP_ERROR_CHECK(network_init());
     ESP_ERROR_CHECK(sensor_manager_init());
     ESP_ERROR_CHECK(web_server_start());
+    ESP_ERROR_CHECK(ota_init());
     xTaskCreate(button_task, "factory_button", 2048, NULL, 4, NULL);
     ESP_LOGI(TAG, "Enviro8 %s ready", APP_VERSION);
 }
