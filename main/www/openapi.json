@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Enviro8 API",
-    "version": "1.2.2",
-    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). Température et humidité (brutes et corrigées) sont une moyenne glissante sur 10 s, remise à zéro après une erreur ou une redétection. `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant."
+    "version": "1.2.6",
+    "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). Température et humidité (brutes et corrigées) sont une moyenne glissante sur 10 s, remise à zéro après une erreur ou une redétection. `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant.\n\n**Connexions**\nL’appareil accepte 8 connexions HTTP au total ; au-delà, il ferme celle dont la dernière requête est la plus ancienne. Chaque appareil client (adresse IP) garde jusqu’à 2 connexions réutilisables (keep-alive). Sur une 3e connexion ou plus, une réponse JSON ferme la connexion (`Connection: close`) ; les pages HTML et les réponses d’erreur ne sont pas concernées."
   },
   "servers": [
     {
@@ -97,7 +97,7 @@
       "get": {
         "tags": ["Status"],
         "summary": "État de l’appareil",
-        "description": "`networkMode` vaut `setup-ap` (SoftAP Enviro8-Setup) ou `station`. `wifiRssi` est 0 en SoftAP.",
+        "description": "`networkMode` vaut `setup-ap` (SoftAP Enviro8-Setup) ou `station`. `wifiRssi` est 0 en SoftAP. Les compteurs de connexions et de mémoire servent au diagnostic.",
         "operationId": "getStatus",
         "responses": {
           "200": {
@@ -339,7 +339,12 @@
           "wifiRssi": { "type": "integer", "description": "dBm en station, 0 en SoftAP" },
           "networkMode": { "type": "string", "enum": ["setup-ap", "station"] },
           "firmwarePartition": { "type": "string", "enum": ["ota_0", "ota_1"] },
-          "firmwarePendingVerify": { "type": "boolean", "description": "Vrai juste après une mise à jour, jusqu’à la confirmation" }
+          "firmwarePendingVerify": { "type": "boolean", "description": "Vrai juste après une mise à jour, jusqu’à la confirmation" },
+          "openSockets": { "type": "integer", "description": "Connexions HTTP ouvertes, tous clients (max 8)" },
+          "clientSockets": { "type": "integer", "description": "Connexions ouvertes par l’appareil qui fait cette requête, elle comprise" },
+          "closedReplies": { "type": "integer", "description": "Réponses après lesquelles la connexion a été fermée (réponse JSON sur la 3e connexion ou plus d’un appareil)" },
+          "freeHeap": { "type": "integer", "description": "Mémoire libre, octets" },
+          "minFreeHeap": { "type": "integer", "description": "Plus bas niveau de mémoire libre depuis le démarrage, octets" }
         }
       },
       "NetworkConfig": {

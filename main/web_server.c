@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"
 #include "network.h"
 #include "ota.h"
 #include "sensor_manager.h"
@@ -27,14 +28,101 @@ extern const unsigned char debug_html_end[] asm("_binary_debug_html_end");
 
 static const char *TAG = "web";
 
+/*
+ * With lru_purge_enable, a new connection beyond MAX_SOCKETS makes httpd close
+ * the session whose last request is oldest (httpd_main.c, httpd_sess.c), on
+ * every endpoint, so idle connections cannot lock other clients out.
+ */
+#define MAX_SOCKETS     8
+#define KEEP_PER_CLIENT 2
+
+static uint32_t s_closed_replies;
+
+static int open_sockets(httpd_handle_t handle)
+{
+    int fds[MAX_SOCKETS];
+    size_t n = MAX_SOCKETS;
+    return httpd_get_client_list(handle, &n, fds) == ESP_OK ? (int)n : -1;
+}
+
+/*
+ * The server listens on an IPv6 socket (CONFIG_LWIP_IPV6), so lwIP reports
+ * IPv4 peers as ::ffff:a.b.c.d (lwIP sockets.c) and one compare covers both.
+ */
+static bool peer_key(int fd, uint8_t key[16])
+{
+    struct sockaddr_in6 addr;
+    socklen_t len = sizeof(addr);
+    if (getpeername(fd, (struct sockaddr *)&addr, &len) != 0 || addr.sin6_family != AF_INET6) {
+        return false;
+    }
+    memcpy(key, &addr.sin6_addr, 16);
+    return true;
+}
+
+/* Open connections from the same device as this request, including it. */
+static int client_sockets(httpd_req_t *req)
+{
+    uint8_t mine[16];
+    if (!peer_key(httpd_req_to_sockfd(req), mine)) {
+        return -1;
+    }
+    int fds[MAX_SOCKETS];
+    size_t n = MAX_SOCKETS;
+    if (httpd_get_client_list(req->handle, &n, fds) != ESP_OK) {
+        return -1;
+    }
+    int count = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t other[16];
+        if (peer_key(fds[i], other) && memcmp(mine, other, 16) == 0) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/*
+ * A capture on the office unit showed Node-RED's HTTP request node (default
+ * settings) leaving 12-14 connections open at a time while replies took up to
+ * 14 s. A device keeps up to KEEP_PER_CLIENT connections; a JSON reply on any
+ * further one closes it.
+ */
+static bool crowded(httpd_req_t *req)
+{
+    /* With this few open in total, no single device can be over its limit. */
+    if (open_sockets(req->handle) <= KEEP_PER_CLIENT) {
+        return false;
+    }
+    return client_sockets(req) > KEEP_PER_CLIENT;
+}
+
 static esp_err_t json_send(httpd_req_t *req, cJSON *json)
 {
     char *payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (!payload) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const bool close = crowded(req);
+    if (close) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+    }
     esp_err_t err = httpd_resp_sendstr(req, payload);
     free(payload);
-    cJSON_Delete(json);
+
+    if (err == ESP_OK && close) {
+        s_closed_replies++;
+        /*
+         * A handler error makes httpd delete the session right after this
+         * handler returns (httpd_uri.c, httpd_main.c), with nothing queued
+         * that could later hit a reused session slot.
+         */
+        return ESP_FAIL;
+    }
     return err;
 }
 
@@ -192,6 +280,11 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddStringToObject(json, "networkMode", network_mode());
     cJSON_AddStringToObject(json, "firmwarePartition", ota_running_partition());
     cJSON_AddBoolToObject(json, "firmwarePendingVerify", ota_pending_verify());
+    cJSON_AddNumberToObject(json, "openSockets", open_sockets(req->handle));
+    cJSON_AddNumberToObject(json, "clientSockets", client_sockets(req));
+    cJSON_AddNumberToObject(json, "closedReplies", s_closed_replies);
+    cJSON_AddNumberToObject(json, "freeHeap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(json, "minFreeHeap", esp_get_minimum_free_heap_size());
     return json_send(req, json);
 }
 
@@ -368,7 +461,7 @@ esp_err_t web_server_start(void)
      * Wi-Fi vanish without a FIN. Without these, dead sockets pile up until
      * every slot is taken and the device stops answering until a reboot.
      */
-    cfg.max_open_sockets = 12;
+    cfg.max_open_sockets = MAX_SOCKETS;
     cfg.lru_purge_enable = true;
     cfg.keep_alive_enable = true;
     cfg.keep_alive_idle = 30;
@@ -376,6 +469,10 @@ esp_err_t web_server_start(void)
     cfg.keep_alive_count = 3;
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
+
+    /* json_send() closes crowded connections by returning ESP_FAIL, which
+     * httpd_uri logs as a warning each time. */
+    esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
 
     httpd_handle_t server;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "start");

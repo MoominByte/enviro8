@@ -60,7 +60,7 @@ Try the endpoints from the onboard Swagger page at `/swagger` or see the screens
 |---|---|---|
 | GET | `/api/v1/sensors` | all cached readings |
 | GET | `/api/v1/sensors/{channel}` | one reading, channel 1–8 |
-| GET | `/api/v1/status` | firmware, uptime, mode, RSSI |
+| GET | `/api/v1/status` | firmware, uptime, mode, RSSI, open connections, free memory |
 | GET | `/api/v1/config` | network (without password) and channel config |
 | PUT | `/api/v1/config/network` | update Wi-Fi and IPv4 config |
 | PUT | `/api/v1/config/channels` | update channel types and offsets |
@@ -80,6 +80,18 @@ Example network update:
 ```json
 {"ssid":"Lab","password":"secret","dhcp":false,"ip":"192.168.1.50","gateway":"192.168.1.1","netmask":"255.255.255.0","dns":"8.8.8.8"}
 ```
+
+### Connection limits
+
+A capture on the office unit showed Node-RED's HTTP request node (default settings) leaving 12–14 connections open on the device at a time over a weak Wi-Fi link, while polls failed. The server now limits connections:
+
+| Open connections | Behavior |
+|---|---|
+| More than 8 in total | the connection whose last request is oldest is closed (ESP-IDF `lru_purge_enable`), on every endpoint |
+| Up to 2 from one device (IP address) | kept and reusable (keep-alive) |
+| A 3rd or more from one device | a JSON reply closes that connection (`Connection: close`); HTML pages and error replies are not affected |
+
+`/api/v1/status` reports `openSockets` (all clients), `clientSockets` (the requesting device), `closedReplies`, `freeHeap` and `minFreeHeap`.
 
 ## Build and flash
 
