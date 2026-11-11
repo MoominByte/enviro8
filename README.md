@@ -68,6 +68,7 @@ Try the endpoints from the onboard Swagger page at `/swagger` or see the screens
 | POST | `/api/v1/reboot` | reboot |
 | POST | `/api/v1/factory-reset` | erase config and reboot |
 | POST | `/api/v1/firmware` | OTA update: raw `.bin` body, `X-OTA-Token` header |
+| POST | `/api/v1/wifi/join-strongest-ap` | background scan; moves to the strongest AP if 6 dB or more better (link drops a few seconds) |
 
 Example channel update:
 

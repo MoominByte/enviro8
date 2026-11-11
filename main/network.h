@@ -21,3 +21,30 @@ typedef struct {
 
 /* One consistent snapshot of the station link and its counters. */
 void network_wifi_status(network_wifi_status_t *out);
+
+typedef struct {
+    char bssid[18]; /* empty when not associated */
+    int channel;
+    int rssi;
+} network_ap_t;
+
+typedef struct {
+    network_ap_t before; /* AP in use; RSSI from the scan when it was seen in it */
+    network_ap_t best;   /* strongest AP with the SSID in the scan */
+    int aps_found;
+    bool moving;         /* network_roam_move() must follow */
+} network_roam_t;
+
+/*
+ * Background-scans for the configured SSID while connected, without dropping
+ * the link. Sets moving when the strongest AP is margin_db or more above the
+ * current one; the caller then answers its client and calls
+ * network_roam_move(), since the move drops the link and lwIP aborts every
+ * TCP connection on the old address.
+ * ESP_ERR_INVALID_STATE: setup AP or not connected; ESP_ERR_NOT_FINISHED:
+ * already running.
+ */
+esp_err_t network_roam_scan(int margin_db, network_roam_t *out);
+
+/* Leaves the current AP and joins the one chosen by network_roam_scan(). */
+esp_err_t network_roam_move(void);

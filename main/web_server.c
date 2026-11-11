@@ -458,6 +458,62 @@ static esp_err_t action_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+#define ROAM_MARGIN_DB 6
+
+static void ap_json(cJSON *parent, const char *name, const network_ap_t *ap)
+{
+    cJSON *o = cJSON_AddObjectToObject(parent, name);
+    cJSON_AddStringToObject(o, "bssid", ap->bssid);
+    cJSON_AddNumberToObject(o, "channel", ap->channel);
+    cJSON_AddNumberToObject(o, "rssi", ap->rssi);
+}
+
+static void roam_task(void *arg)
+{
+    httpd_req_t *req = arg;
+    network_roam_t r;
+    const esp_err_t err = network_roam_scan(ROAM_MARGIN_DB, &r);
+
+    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_NOT_FINISHED) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, err == ESP_ERR_NOT_FINISHED ? "already running"
+                                                            : "not connected to Wi-Fi");
+    } else if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(err));
+    } else {
+        cJSON *json = cJSON_CreateObject();
+        ap_json(json, "before", &r.before);
+        ap_json(json, "best", &r.best);
+        cJSON_AddNumberToObject(json, "apsFound", r.aps_found);
+        cJSON_AddNumberToObject(json, "marginDb", ROAM_MARGIN_DB);
+        cJSON_AddBoolToObject(json, "moving", r.moving);
+        json_send(req, json);
+    }
+    httpd_req_async_handler_complete(req);
+
+    if (r.moving) {
+        /* Like reboot: let the reply leave before the link drops. */
+        vTaskDelay(pdMS_TO_TICKS(200));
+        network_roam_move();
+    }
+    vTaskDelete(NULL);
+}
+
+/* The scan takes a while: run it off the server task so other clients keep being served. */
+static esp_err_t join_strongest_post(httpd_req_t *req)
+{
+    httpd_req_t *copy = NULL;
+    if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy");
+    }
+    if (xTaskCreate(roam_task, "roam", 6144, copy, 5, NULL) != pdPASS) {
+        httpd_req_async_handler_complete(copy);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+    return ESP_OK;
+}
+
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -503,6 +559,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/reboot", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/factory-reset", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/firmware", .method = HTTP_POST, .handler = ota_upload_handler},
+        {.uri = "/api/v1/wifi/join-strongest-ap", .method = HTTP_POST, .handler = join_strongest_post},
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

@@ -1,6 +1,7 @@
 #include "network.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app_config.h"
@@ -19,6 +20,25 @@ static uint32_t s_disconnects;
 static uint32_t s_connect_failures;
 static uint32_t s_last_reason;
 static int32_t s_last_disconnect_s = -1;
+
+#define ROAM_MAX_APS  16
+/* join-strongest-ap: set while we leave on purpose to join a chosen BSSID. */
+static bool s_roam_leaving;
+/* The station config is locked to one BSSID; undone on the next drop. */
+static bool s_pinned;
+static bool s_roam_busy;
+static wifi_config_t s_roam_cfg; /* station config locked to the chosen BSSID */
+
+static void unpin(void)
+{
+    wifi_config_t c;
+    if (esp_wifi_get_config(WIFI_IF_STA, &c) == ESP_OK) {
+        c.sta.bssid_set = false;
+        c.sta.channel = 0;
+        esp_wifi_set_config(WIFI_IF_STA, &c);
+    }
+    s_pinned = false;
+}
 
 static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -58,6 +78,16 @@ static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data
             ESP_LOGW(TAG, "disconnected, reason %u, rssi %d", e->reason, e->rssi);
         } else {
             ESP_LOGI(TAG, "connect attempt failed, reason %u", e->reason);
+        }
+        /*
+         * The connect that follows our own leave keeps the BSSID lock; any
+         * other drop, or a failed join of the chosen AP, goes back to the
+         * normal strongest-AP scan.
+         */
+        if (s_roam_leaving) {
+            s_roam_leaving = false;
+        } else if (s_pinned) {
+            unpin();
         }
         esp_wifi_connect();
     }
@@ -164,6 +194,122 @@ void network_wifi_status(network_wifi_status_t *out)
     out->last_reason = s_last_reason;
     out->last_disconnect_s = s_last_disconnect_s;
     portEXIT_CRITICAL(&s_mux);
+}
+
+static void fill_ap(network_ap_t *out, const uint8_t *bssid, int channel, int rssi)
+{
+    snprintf(out->bssid, sizeof(out->bssid), "%02X:%02X:%02X:%02X:%02X:%02X", bssid[0],
+             bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    out->channel = channel;
+    out->rssi = rssi;
+}
+
+static void roam_release(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_roam_busy = false;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+esp_err_t network_roam_scan(int margin_db, network_roam_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (s_ap_mode) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    portENTER_CRITICAL(&s_mux);
+    const bool busy = s_roam_busy;
+    s_roam_busy = true;
+    portEXIT_CRITICAL(&s_mux);
+    if (busy) {
+        return ESP_ERR_NOT_FINISHED;
+    }
+
+    esp_err_t err = ESP_OK;
+    wifi_ap_record_t *recs = NULL;
+    wifi_ap_record_t cur;
+    wifi_config_t cfg;
+    if (esp_wifi_sta_get_ap_info(&cur) != ESP_OK
+        || esp_wifi_get_config(WIFI_IF_STA, &cfg) != ESP_OK) {
+        err = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+    fill_ap(&out->before, cur.bssid, cur.primary, cur.rssi);
+
+    /* Background scan: the link stays up; the radio returns to its channel between channels. */
+    wifi_scan_config_t scan = {
+        .ssid = cfg.sta.ssid,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+    err = esp_wifi_scan_start(&scan, true);
+    if (err != ESP_OK) {
+        goto done;
+    }
+    uint16_t n = ROAM_MAX_APS;
+    recs = calloc(n, sizeof(*recs));
+    if (!recs) {
+        esp_wifi_clear_ap_list();
+        err = ESP_ERR_NO_MEM;
+        goto done;
+    }
+    err = esp_wifi_scan_get_ap_records(&n, recs);
+    if (err != ESP_OK) {
+        goto done;
+    }
+    out->aps_found = n;
+
+    int best = -1;
+    int cur_rssi = cur.rssi;
+    for (int i = 0; i < n; i++) {
+        if (best < 0 || recs[i].rssi > recs[best].rssi) {
+            best = i;
+        }
+        if (memcmp(recs[i].bssid, cur.bssid, sizeof(cur.bssid)) == 0) {
+            cur_rssi = recs[i].rssi; /* same measurement time as the others */
+        }
+    }
+    out->before.rssi = cur_rssi;
+    if (best < 0) {
+        out->best = out->before;
+        goto done;
+    }
+    fill_ap(&out->best, recs[best].bssid, recs[best].primary, recs[best].rssi);
+
+    if (memcmp(recs[best].bssid, cur.bssid, sizeof(cur.bssid)) != 0
+        && recs[best].rssi >= cur_rssi + margin_db) {
+        s_roam_cfg = cfg;
+        s_roam_cfg.sta.bssid_set = true;
+        memcpy(s_roam_cfg.sta.bssid, recs[best].bssid, sizeof(s_roam_cfg.sta.bssid));
+        s_roam_cfg.sta.channel = recs[best].primary;
+        out->moving = true;
+    }
+
+done:
+    free(recs);
+    if (!out->moving) {
+        roam_release();
+    }
+    return err;
+}
+
+esp_err_t network_roam_move(void)
+{
+    ESP_LOGI(TAG, "moving to %02X:%02X:%02X:%02X:%02X:%02X ch %u", s_roam_cfg.sta.bssid[0],
+             s_roam_cfg.sta.bssid[1], s_roam_cfg.sta.bssid[2], s_roam_cfg.sta.bssid[3],
+             s_roam_cfg.sta.bssid[4], s_roam_cfg.sta.bssid[5], s_roam_cfg.sta.channel);
+    s_roam_leaving = true;
+    s_pinned = true;
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &s_roam_cfg);
+    if (err == ESP_OK) {
+        err = esp_wifi_disconnect();
+    }
+    if (err != ESP_OK) {
+        s_roam_leaving = false;
+        unpin();
+    }
+    roam_release();
+    return err;
 }
 
 const char *network_mode(void)

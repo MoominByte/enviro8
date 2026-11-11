@@ -15,7 +15,8 @@
     { "name": "Sensors", "description": "Lectures en cache et détection" },
     { "name": "Status", "description": "État du firmware et du Wi-Fi" },
     { "name": "Config", "description": "Réseau et configuration des canaux" },
-    { "name": "Device", "description": "Redémarrage, reset usine et mise à jour firmware" }
+    { "name": "Device", "description": "Redémarrage, reset usine et mise à jour firmware" },
+    { "name": "Connectivity", "description": "Liens radio : Wi-Fi (et Bluetooth s’il est activé)" }
   ],
   "paths": {
     "/api/v1/sensors": {
@@ -247,6 +248,26 @@
         }
       }
     },
+    "/api/v1/wifi/join-strongest-ap": {
+      "post": {
+        "tags": ["Connectivity"],
+        "summary": "Rejoindre le point d’accès le plus fort",
+        "description": "Itinérance (roaming) sur demande. Balaye en arrière-plan tous les canaux pour le SSID configuré, sans couper la connexion. Change de point d’accès seulement si le plus fort dépasse l’actuel d’au moins `marginDb` (6 dB) : la réponse part d’abord, puis le lien Wi-Fi coupe quelques secondes, sans redémarrage, et toutes les connexions TCP ouvertes vers l’appareil sont fermées. Sinon rien ne change. Pas de corps. Le point d’accès choisi est gardé jusqu’à la prochaine coupure, après quoi le choix normal (le plus fort au balayage) reprend.",
+        "operationId": "joinStrongestAp",
+        "responses": {
+          "200": {
+            "description": "Balayage fait ; `moving` dit si l’appareil va changer de point d’accès",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/JoinStrongestApResponse" }
+              }
+            }
+          },
+          "409": { "description": "Pas connecté au Wi-Fi (ou en SoftAP), ou une demande est déjà en cours" },
+          "500": { "description": "Échec du balayage ou du changement" }
+        }
+      }
+    },
     "/api/v1/factory-reset": {
       "post": {
         "tags": ["Device"],
@@ -351,6 +372,24 @@
           "closedReplies": { "type": "integer", "description": "Réponses après lesquelles la connexion a été fermée (réponse JSON sur la 3e connexion ou plus d’un appareil)" },
           "freeHeap": { "type": "integer", "description": "Mémoire libre, octets" },
           "minFreeHeap": { "type": "integer", "description": "Plus bas niveau de mémoire libre depuis le démarrage, octets" }
+        }
+      },
+      "AccessPoint": {
+        "type": "object",
+        "properties": {
+          "bssid": { "type": "string", "description": "Adresse MAC du point d’accès, vide si non connecté" },
+          "channel": { "type": "integer" },
+          "rssi": { "type": "integer", "description": "dBm" }
+        }
+      },
+      "JoinStrongestApResponse": {
+        "type": "object",
+        "properties": {
+          "before": { "$ref": "#/components/schemas/AccessPoint" },
+          "best": { "$ref": "#/components/schemas/AccessPoint" },
+          "apsFound": { "type": "integer", "description": "Points d’accès trouvés avec le SSID" },
+          "marginDb": { "type": "integer", "description": "Écart minimal pour changer, dB" },
+          "moving": { "type": "boolean", "description": "Vrai : l’appareil change de point d’accès juste après cette réponse ; voir `wifiBssid` dans /api/v1/status quelques secondes plus tard" }
         }
       },
       "NetworkConfig": {
