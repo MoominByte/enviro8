@@ -22,6 +22,7 @@ static uint32_t s_last_reason;
 static int32_t s_last_disconnect_s = -1;
 
 #define ROAM_MAX_APS  16
+#define ROAM_RECOVER_S 45 /* > two 10 s handshake timeouts plus scans */
 /* join-strongest-ap: set while we leave on purpose to join a chosen BSSID. */
 static bool s_roam_leaving;
 /* The station config is locked to one BSSID; undone on the next drop. */
@@ -74,10 +75,17 @@ static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data
         const wifi_event_sta_disconnected_t *e = data;
         portENTER_CRITICAL(&s_mux);
         const bool was_connected = s_connected;
-        const bool roaming = s_roam_leaving;
+        /*
+         * Our own leave reports ASSOC_LEAVE (wifi.rst, reason codes). Any other
+         * reason is a real drop, even while a move is pending; the flag then
+         * stays for the leave's own event.
+         */
+        const bool roaming = s_roam_leaving && e->reason == WIFI_REASON_ASSOC_LEAVE;
         const bool pinned = s_pinned;
         s_connected = false;
-        s_roam_leaving = false;
+        if (roaming) {
+            s_roam_leaving = false;
+        }
         if (was_connected && roaming) {
             s_roams++; /* our own leave: not a link loss */
         } else if (was_connected) {
@@ -308,6 +316,14 @@ done:
     return err;
 }
 
+bool network_connected(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const bool c = s_connected;
+    portEXIT_CRITICAL(&s_mux);
+    return c;
+}
+
 esp_err_t network_roam_move(void)
 {
     /* The link may have dropped since the scan; the auto-reconnect owns it then. */
@@ -316,6 +332,11 @@ esp_err_t network_roam_move(void)
         ESP_LOGW(TAG, "roam cancelled: not connected any more");
         roam_release();
         return ESP_ERR_INVALID_STATE;
+    }
+    if (memcmp(cur.bssid, s_roam_cfg.sta.bssid, sizeof(cur.bssid)) == 0) {
+        ESP_LOGI(TAG, "roam skipped: already on the target AP");
+        roam_release();
+        return ESP_OK;
     }
     ESP_LOGI(TAG, "moving to %02X:%02X:%02X:%02X:%02X:%02X ch %u", s_roam_cfg.sta.bssid[0],
              s_roam_cfg.sta.bssid[1], s_roam_cfg.sta.bssid[2], s_roam_cfg.sta.bssid[3],
@@ -334,9 +355,30 @@ esp_err_t network_roam_move(void)
         s_roam_leaving = false;
         portEXIT_CRITICAL(&s_mux);
         unpin();
+        roam_release();
+        return err;
+    }
+
+    /*
+     * Only the DISCONNECTED handler restarts the connection. If our leave
+     * cancelled a reconnect already under way and no event follows, nothing
+     * would; after ROAM_RECOVER_S without a link, clear the move and connect.
+     */
+    for (int i = 0; i < ROAM_RECOVER_S && !network_connected(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!network_connected()) {
+        portENTER_CRITICAL(&s_mux);
+        s_roam_leaving = false;
+        portEXIT_CRITICAL(&s_mux);
+        ESP_LOGW(TAG, "no link %d s after the move, reconnecting", ROAM_RECOVER_S);
+        if (s_pinned) {
+            unpin();
+        }
+        esp_wifi_connect();
     }
     roam_release();
-    return err;
+    return ESP_OK;
 }
 
 const char *network_mode(void)

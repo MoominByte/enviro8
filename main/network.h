@@ -47,5 +47,11 @@ typedef struct {
  */
 esp_err_t network_roam_scan(int margin_db, network_roam_t *out);
 
-/* Leaves the current AP and joins the one chosen by network_roam_scan(). */
+/*
+ * Leaves the current AP and joins the one chosen by network_roam_scan().
+ * Blocks until linked again, up to 45 s, then restarts the connection.
+ */
 esp_err_t network_roam_move(void);
+
+/* Station associated (WIFI_EVENT_STA_CONNECTED seen, no drop since). */
+bool network_connected(void);

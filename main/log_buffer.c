@@ -81,6 +81,8 @@ static size_t s_pending_len;
 static bool s_dropping; /* inside a dropped line until its '\n' */
 /* Task writing the held or dropped line; other tasks' lines pass straight through. */
 static TaskHandle_t s_owner;
+/* A truncated wifi text already ended its line; skip the driver's "\n". */
+static bool s_skip_nl;
 
 static bool is_wifi_info(const char *s)
 {
@@ -100,9 +102,15 @@ static void store(const char *s, size_t len)
 {
     const bool ends_line = len > 0 && s[len - 1] == '\n';
     const TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    if ((s_pending_len || s_dropping) && self != s_owner) {
+    if ((s_pending_len || s_dropping || s_skip_nl) && self != s_owner) {
         append(s, len); /* another task's line, between the pieces of a wifi line */
         return;
+    }
+    if (s_skip_nl) {
+        s_skip_nl = false;
+        if (len == 1 && s[0] == '\n') {
+            return;
+        }
     }
     if (s_pending_len) {
         /* Text following a held wifi prefix. */
@@ -112,6 +120,7 @@ static void store(const char *s, size_t len)
         } else {
             s_dropping = !ends_line;
         }
+        s_skip_nl = ends_line; /* the text was cut and given its own '\n' */
         s_pending_len = 0;
         return;
     }

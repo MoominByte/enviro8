@@ -476,7 +476,9 @@ static esp_err_t action_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-#define ROAM_MARGIN_DB 6
+#define ROAM_MARGIN_DB      6
+#define ROAM_MAX_BODY       256 /* the endpoint takes no body; tolerate a small one */
+#define ROAM_BODY_TIMEOUTS  0   /* give up at the first 10 s recv timeout, like httpd's own purge */
 
 static void ap_json(cJSON *parent, const char *name, const network_ap_t *ap)
 {
@@ -528,11 +530,21 @@ static esp_err_t join_strongest_post(httpd_req_t *req)
      * The async copy stops httpd from purging the body, so read it here or
      * its bytes would be parsed as the next request on this connection.
      */
+    if (req->content_len > ROAM_MAX_BODY) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        httpd_resp_sendstr(req, "body too large (max 256 bytes, ignored)");
+        /* ESP_OK: httpd discards the body itself (same 10 s limit per read). */
+        return ESP_OK;
+    }
+    /* httpd has one task: give up on a client that announces a body and stalls. */
     char sink[64];
     int left = (int)req->content_len;
+    int timeouts = 0;
     while (left > 0) {
         int r = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
-        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts <= ROAM_BODY_TIMEOUTS) {
             continue;
         }
         if (r <= 0) {
