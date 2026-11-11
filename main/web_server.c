@@ -276,7 +276,15 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "firmwareVersion", APP_VERSION);
     cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
-    cJSON_AddNumberToObject(json, "wifiRssi", network_rssi());
+    network_wifi_status_t wifi;
+    network_wifi_status(&wifi);
+    cJSON_AddNumberToObject(json, "wifiRssi", wifi.rssi);
+    cJSON_AddStringToObject(json, "wifiBssid", wifi.bssid);
+    cJSON_AddNumberToObject(json, "wifiChannel", wifi.channel);
+    cJSON_AddNumberToObject(json, "wifiDisconnects", wifi.disconnects);
+    cJSON_AddNumberToObject(json, "wifiConnectFailures", wifi.connect_failures);
+    cJSON_AddNumberToObject(json, "wifiLastDisconnectReason", wifi.last_reason);
+    cJSON_AddNumberToObject(json, "wifiLastDisconnectUptime", wifi.last_disconnect_s);
     cJSON_AddStringToObject(json, "networkMode", network_mode());
     cJSON_AddStringToObject(json, "firmwarePartition", ota_running_partition());
     cJSON_AddBoolToObject(json, "firmwarePendingVerify", ota_pending_verify());

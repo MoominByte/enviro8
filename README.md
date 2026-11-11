@@ -60,7 +60,7 @@ Try the endpoints from the onboard Swagger page at `/swagger` or see the screens
 |---|---|---|
 | GET | `/api/v1/sensors` | all cached readings |
 | GET | `/api/v1/sensors/{channel}` | one reading, channel 1–8 |
-| GET | `/api/v1/status` | firmware, uptime, mode, RSSI, open connections, free memory |
+| GET | `/api/v1/status` | firmware, uptime, mode, Wi-Fi link and disconnects, open connections, free memory |
 | GET | `/api/v1/config` | network (without password) and channel config |
 | PUT | `/api/v1/config/network` | update Wi-Fi and IPv4 config |
 | PUT | `/api/v1/config/channels` | update channel types and offsets |
@@ -92,6 +92,8 @@ A capture on the office unit showed Node-RED's HTTP request node (default settin
 | A 3rd or more from one device | a JSON reply closes that connection (`Connection: close`); HTML pages and error replies are not affected |
 
 `/api/v1/status` reports `openSockets` (all clients), `clientSockets` (the requesting device), `closedReplies`, `freeHeap` and `minFreeHeap`.
+
+For the Wi-Fi link it reports `wifiRssi`, `wifiBssid` and `wifiChannel` of the access point in use, `wifiDisconnects` (losses of an established link since boot), `wifiConnectFailures` (failed connect attempts), and `wifiLastDisconnectReason` (ESP-IDF `wifi_err_reason_t`) with `wifiLastDisconnectUptime` (`uptimeSeconds` of the last loss, -1 if none). On each connect the station scans every channel and joins the strongest access point with the SSID.
 
 ## Build and flash
 
@@ -130,7 +132,7 @@ The device writes the inactive slot, reboots into it, and confirms the new image
 ## Project structure
 
 - `app_config.*` — defaults, NVS serialization, channel type mapping
-- `network.*` — setup AP, DHCP/static station configuration, RSSI
+- `network.*` — setup AP, DHCP/static station configuration, Wi-Fi link status and disconnect counters
 - `sensor_manager.*` — TCA9548A and SHT4x/SHT3x/SHT2x protocols, polling/cache
 - `web_server.*` — embedded HTTP server and REST API
 - `ota.*` — firmware upload endpoint and rollback confirmation

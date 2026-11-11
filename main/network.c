@@ -1,24 +1,64 @@
 #include "network.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "app_config.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
 
 static const char *TAG = "network";
 static bool s_ap_mode;
+static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_connected;
+static uint32_t s_disconnects;
+static uint32_t s_connect_failures;
+static uint32_t s_last_reason;
+static int32_t s_last_disconnect_s = -1;
 
 static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
-    (void)data;
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        const wifi_event_sta_connected_t *e = data;
+        wifi_ap_record_t ap;
+        const int rssi = esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
+        portENTER_CRITICAL(&s_mux);
+        s_connected = true;
+        portEXIT_CRITICAL(&s_mux);
+        ESP_LOGI(TAG, "connected to %02X:%02X:%02X:%02X:%02X:%02X, channel %u, rssi %d",
+                 e->bssid[0], e->bssid[1], e->bssid[2], e->bssid[3], e->bssid[4], e->bssid[5],
+                 e->channel, rssi);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        /*
+         * Also raised for every failed esp_wifi_connect(). Only a loss of an
+         * established link counts as a disconnect; failed attempts are
+         * counted apart so they do not overwrite the reason of the drop.
+         */
+        const wifi_event_sta_disconnected_t *e = data;
+        portENTER_CRITICAL(&s_mux);
+        const bool was_connected = s_connected;
+        s_connected = false;
+        if (was_connected) {
+            s_disconnects++;
+            s_last_reason = e->reason;
+            s_last_disconnect_s = (int32_t)(esp_timer_get_time() / 1000000);
+        } else {
+            s_connect_failures++;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        if (was_connected) {
+            ESP_LOGW(TAG, "disconnected, reason %u, rssi %d", e->reason, e->rssi);
+        } else {
+            ESP_LOGI(TAG, "connect attempt failed, reason %u", e->reason);
+        }
         esp_wifi_connect();
     }
 }
@@ -69,6 +109,12 @@ static esp_err_t start_station(const app_config_t *cfg)
     strncpy((char *)wifi.sta.ssid, cfg->ssid, sizeof(wifi.sta.ssid));
     strncpy((char *)wifi.sta.password, cfg->password, sizeof(wifi.sta.password));
     wifi.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    /*
+     * The default fast scan joins the first AP that matches the SSID. Scan
+     * every channel and take the strongest, on each (re)connect.
+     */
+    wifi.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
@@ -102,13 +148,22 @@ esp_err_t network_init(void)
     return start_station(&cfg);
 }
 
-int network_rssi(void)
+void network_wifi_status(network_wifi_status_t *out)
 {
+    memset(out, 0, sizeof(*out));
     wifi_ap_record_t ap;
     if (!s_ap_mode && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        return ap.rssi;
+        out->rssi = ap.rssi;
+        out->channel = ap.primary;
+        snprintf(out->bssid, sizeof(out->bssid), "%02X:%02X:%02X:%02X:%02X:%02X", ap.bssid[0],
+                 ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5]);
     }
-    return 0;
+    portENTER_CRITICAL(&s_mux);
+    out->disconnects = s_disconnects;
+    out->connect_failures = s_connect_failures;
+    out->last_reason = s_last_reason;
+    out->last_disconnect_s = s_last_disconnect_s;
+    portEXIT_CRITICAL(&s_mux);
 }
 
 const char *network_mode(void)
