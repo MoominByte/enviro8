@@ -271,11 +271,34 @@ static esp_err_t sensor_get(httpd_req_t *req)
     return json_send(req, reading_json(channel - 1));
 }
 
+static const char *reset_reason_name(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external-pin";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt-watchdog";
+    case ESP_RST_TASK_WDT: return "task-watchdog";
+    case ESP_RST_WDT: return "other-watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    case ESP_RST_USB: return "usb";
+    case ESP_RST_JTAG: return "jtag";
+    case ESP_RST_EFUSE: return "efuse";
+    case ESP_RST_PWR_GLITCH: return "power-glitch";
+    case ESP_RST_CPU_LOCKUP: return "cpu-lockup";
+    default: return "unknown";
+    }
+}
+
 static esp_err_t status_get(httpd_req_t *req)
 {
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "firmwareVersion", APP_VERSION);
     cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddStringToObject(json, "resetReason", reset_reason_name(esp_reset_reason()));
     network_wifi_status_t wifi;
     network_wifi_status(&wifi);
     cJSON_AddNumberToObject(json, "wifiRssi", wifi.rssi);

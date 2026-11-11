@@ -94,6 +94,8 @@ A capture on the office unit showed Node-RED's HTTP request node (default settin
 
 `/api/v1/status` reports `openSockets` (all clients), `clientSockets` (the requesting device), `closedReplies`, `freeHeap` and `minFreeHeap`.
 
+`resetReason` gives the cause of the last start (`power-on`, `software` for reboot/OTA, `panic` or a `*-watchdog` for a crash, `brownout`, `usb`...).
+
 For the Wi-Fi link it reports `wifiRssi`, `wifiBssid` and `wifiChannel` of the access point in use, `wifiDisconnects` (losses of an established link since boot), `wifiConnectFailures` (failed connect attempts), and `wifiLastDisconnectReason` (ESP-IDF `wifi_err_reason_t`) with `wifiLastDisconnectUptime` (`uptimeSeconds` of the last loss, -1 if none). On each connect the station scans every channel and joins the strongest access point with the SSID.
 
 ## Build and flash

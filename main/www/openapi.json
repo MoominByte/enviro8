@@ -357,6 +357,11 @@
         "properties": {
           "firmwareVersion": { "type": "string", "example": "1.1.0" },
           "uptimeSeconds": { "type": "integer" },
+          "resetReason": {
+            "type": "string",
+            "description": "Cause du dernier démarrage (esp_reset_reason). `software` : redémarrage demandé (reboot, OTA, rollback) ; `panic`, `*-watchdog`, `cpu-lockup` : plantage ; `power-on` : mise sous tension ; `brownout`, `power-glitch` : alimentation trop basse ; `usb` : reset par le port USB.",
+            "enum": ["power-on", "external-pin", "software", "panic", "interrupt-watchdog", "task-watchdog", "other-watchdog", "deep-sleep", "brownout", "sdio", "usb", "jtag", "efuse", "power-glitch", "cpu-lockup", "unknown"]
+          },
           "wifiRssi": { "type": "integer", "description": "dBm en station, 0 en SoftAP" },
           "wifiBssid": { "type": "string", "description": "Adresse MAC du point d’accès utilisé, vide si non associé" },
           "wifiChannel": { "type": "integer", "description": "Canal Wi-Fi du point d’accès, 0 si non associé" },
