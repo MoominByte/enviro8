@@ -12,3 +12,6 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 # A new OTA image boots "pending" and is rolled back unless it confirms itself.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# The Wi-Fi event handler logs, and every log line also goes through the
+# log buffer hook (log_buffer.c); the default 2304 B left little margin.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3584

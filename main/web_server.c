@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "log_buffer.h"
 #include "network.h"
 #include "ota.h"
 #include "sensor_manager.h"
@@ -271,26 +272,19 @@ static esp_err_t sensor_get(httpd_req_t *req)
     return json_send(req, reading_json(channel - 1));
 }
 
-static const char *reset_reason_name(esp_reset_reason_t r)
+static esp_err_t logs_get(httpd_req_t *req)
 {
-    switch (r) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_EXT: return "external-pin";
-    case ESP_RST_SW: return "software";
-    case ESP_RST_PANIC: return "panic";
-    case ESP_RST_INT_WDT: return "interrupt-watchdog";
-    case ESP_RST_TASK_WDT: return "task-watchdog";
-    case ESP_RST_WDT: return "other-watchdog";
-    case ESP_RST_DEEPSLEEP: return "deep-sleep";
-    case ESP_RST_BROWNOUT: return "brownout";
-    case ESP_RST_SDIO: return "sdio";
-    case ESP_RST_USB: return "usb";
-    case ESP_RST_JTAG: return "jtag";
-    case ESP_RST_EFUSE: return "efuse";
-    case ESP_RST_PWR_GLITCH: return "power-glitch";
-    case ESP_RST_CPU_LOCKUP: return "cpu-lockup";
-    default: return "unknown";
+    const size_t cap = log_buffer_size();
+    char *buf = malloc(cap);
+    if (!buf) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
     }
+    const size_t len = log_buffer_copy(buf, cap);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, buf, (ssize_t)len);
+    free(buf);
+    return err;
 }
 
 static esp_err_t status_get(httpd_req_t *req)
@@ -306,6 +300,7 @@ static esp_err_t status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(json, "wifiChannel", wifi.channel);
     cJSON_AddNumberToObject(json, "wifiDisconnects", wifi.disconnects);
     cJSON_AddNumberToObject(json, "wifiConnectFailures", wifi.connect_failures);
+    cJSON_AddNumberToObject(json, "wifiRoams", wifi.roams);
     cJSON_AddNumberToObject(json, "wifiLastDisconnectReason", wifi.last_reason);
     cJSON_AddNumberToObject(json, "wifiLastDisconnectUptime", wifi.last_disconnect_s);
     cJSON_AddStringToObject(json, "networkMode", network_mode());
@@ -511,7 +506,10 @@ static void roam_task(void *arg)
         cJSON_AddNumberToObject(json, "apsFound", r.aps_found);
         cJSON_AddNumberToObject(json, "marginDb", ROAM_MARGIN_DB);
         cJSON_AddBoolToObject(json, "moving", r.moving);
-        json_send(req, json);
+        if (json_send(req, json) == ESP_FAIL) {
+            /* Crowded: json_send relies on a handler error to close, which an async task lacks. */
+            httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+        }
     }
     httpd_req_async_handler_complete(req);
 
@@ -526,6 +524,22 @@ static void roam_task(void *arg)
 /* The scan takes a while: run it off the server task so other clients keep being served. */
 static esp_err_t join_strongest_post(httpd_req_t *req)
 {
+    /*
+     * The async copy stops httpd from purging the body, so read it here or
+     * its bytes would be parsed as the next request on this connection.
+     */
+    char sink[64];
+    int left = (int)req->content_len;
+    while (left > 0) {
+        int r = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (r <= 0) {
+            return ESP_FAIL;
+        }
+        left -= r;
+    }
     httpd_req_t *copy = NULL;
     if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy");
@@ -540,7 +554,7 @@ static esp_err_t join_strongest_post(httpd_req_t *req)
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 24; /* 19 used */
     cfg.stack_size = 8192;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     /*
@@ -575,6 +589,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/sensors", .method = HTTP_GET, .handler = sensors_get},
         {.uri = "/api/v1/sensors/*", .method = HTTP_GET, .handler = sensor_get},
         {.uri = "/api/v1/status", .method = HTTP_GET, .handler = status_get},
+        {.uri = "/api/v1/logs", .method = HTTP_GET, .handler = logs_get},
         {.uri = "/api/v1/config", .method = HTTP_GET, .handler = config_get},
         {.uri = "/api/v1/config/network", .method = HTTP_PUT, .handler = network_put},
         {.uri = "/api/v1/config/channels", .method = HTTP_PUT, .handler = channels_put},

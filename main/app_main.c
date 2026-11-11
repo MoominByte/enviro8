@@ -1,4 +1,5 @@
 #include "app_config.h"
+#include "log_buffer.h"
 #include "network.h"
 #include "ota.h"
 #include "sensor_manager.h"
@@ -45,6 +46,7 @@ static void button_task(void *arg)
 
 void app_main(void)
 {
+    log_buffer_init();
     ESP_ERROR_CHECK(app_config_init());
     ESP_ERROR_CHECK(network_init());
     ESP_ERROR_CHECK(sensor_manager_init());

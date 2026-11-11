@@ -112,6 +112,20 @@
         }
       }
     },
+    "/api/v1/logs": {
+      "get": {
+        "tags": ["Status"],
+        "summary": "Journal récent",
+        "description": "Dernières lignes du journal ESP_LOG (8 Ko, les plus anciennes d’abord), gardées en mémoire LP. Elles survivent à un redémarrage logiciel, un plantage, un watchdog ou une baisse de tension (brownout), pas à une coupure de courant. Les lignes de routine du pilote Wi-Fi n’y sont pas (seuls ses changements d’état, avertissements et erreurs). Chaque démarrage ajoute une ligne `=== boot N, reset reason … ===`. La trace d’un plantage (backtrace) n’y est pas : elle ne sort que sur le port série.",
+        "operationId": "getLogs",
+        "responses": {
+          "200": {
+            "description": "Texte brut, une ligne par entrée",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
     "/api/v1/config": {
       "get": {
         "tags": ["Config"],
@@ -367,6 +381,7 @@
           "wifiChannel": { "type": "integer", "description": "Canal Wi-Fi du point d’accès, 0 si non associé" },
           "wifiDisconnects": { "type": "integer", "description": "Pertes d’une connexion Wi-Fi établie depuis le démarrage" },
           "wifiConnectFailures": { "type": "integer", "description": "Tentatives de connexion Wi-Fi échouées depuis le démarrage" },
+          "wifiRoams": { "type": "integer", "description": "Changements de point d’accès faits par join-strongest-ap depuis le démarrage (pas comptés dans wifiDisconnects)" },
           "wifiLastDisconnectReason": { "type": "integer", "description": "Code de raison ESP-IDF (wifi_err_reason_t) de la dernière déconnexion, 0 si aucune" },
           "wifiLastDisconnectUptime": { "type": "integer", "description": "uptimeSeconds au moment de la dernière déconnexion, -1 si aucune" },
           "networkMode": { "type": "string", "enum": ["setup-ap", "station"] },

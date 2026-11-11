@@ -1,7 +1,6 @@
 #include "network.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "app_config.h"
@@ -18,6 +17,7 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_connected;
 static uint32_t s_disconnects;
 static uint32_t s_connect_failures;
+static uint32_t s_roams;
 static uint32_t s_last_reason;
 static int32_t s_last_disconnect_s = -1;
 
@@ -29,15 +29,24 @@ static bool s_pinned;
 static bool s_roam_busy;
 static wifi_config_t s_roam_cfg; /* station config locked to the chosen BSSID */
 
+/* Back to the normal strongest-AP join. Stays pinned (retried on the next drop) if it fails. */
 static void unpin(void)
 {
     wifi_config_t c;
-    if (esp_wifi_get_config(WIFI_IF_STA, &c) == ESP_OK) {
-        c.sta.bssid_set = false;
-        c.sta.channel = 0;
-        esp_wifi_set_config(WIFI_IF_STA, &c);
+    if (esp_wifi_get_config(WIFI_IF_STA, &c) != ESP_OK) {
+        return;
     }
-    s_pinned = false;
+    c.sta.bssid_set = false;
+    c.sta.channel = 0;
+    c.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &c);
+    if (err == ESP_OK) {
+        portENTER_CRITICAL(&s_mux);
+        s_pinned = false;
+        portEXIT_CRITICAL(&s_mux);
+    } else {
+        ESP_LOGW(TAG, "unpin failed: %s", esp_err_to_name(err));
+    }
 }
 
 static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -65,8 +74,13 @@ static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data
         const wifi_event_sta_disconnected_t *e = data;
         portENTER_CRITICAL(&s_mux);
         const bool was_connected = s_connected;
+        const bool roaming = s_roam_leaving;
+        const bool pinned = s_pinned;
         s_connected = false;
-        if (was_connected) {
+        s_roam_leaving = false;
+        if (was_connected && roaming) {
+            s_roams++; /* our own leave: not a link loss */
+        } else if (was_connected) {
             s_disconnects++;
             s_last_reason = e->reason;
             s_last_disconnect_s = (int32_t)(esp_timer_get_time() / 1000000);
@@ -74,7 +88,9 @@ static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data
             s_connect_failures++;
         }
         portEXIT_CRITICAL(&s_mux);
-        if (was_connected) {
+        if (was_connected && roaming) {
+            ESP_LOGI(TAG, "left the AP to roam");
+        } else if (was_connected) {
             ESP_LOGW(TAG, "disconnected, reason %u, rssi %d", e->reason, e->rssi);
         } else {
             ESP_LOGI(TAG, "connect attempt failed, reason %u", e->reason);
@@ -84,9 +100,7 @@ static void wifi_events(void *arg, esp_event_base_t base, int32_t id, void *data
          * other drop, or a failed join of the chosen AP, goes back to the
          * normal strongest-AP scan.
          */
-        if (s_roam_leaving) {
-            s_roam_leaving = false;
-        } else if (s_pinned) {
+        if (!roaming && pinned) {
             unpin();
         }
         esp_wifi_connect();
@@ -191,6 +205,7 @@ void network_wifi_status(network_wifi_status_t *out)
     portENTER_CRITICAL(&s_mux);
     out->disconnects = s_disconnects;
     out->connect_failures = s_connect_failures;
+    out->roams = s_roams;
     out->last_reason = s_last_reason;
     out->last_disconnect_s = s_last_disconnect_s;
     portEXIT_CRITICAL(&s_mux);
@@ -226,7 +241,8 @@ esp_err_t network_roam_scan(int margin_db, network_roam_t *out)
     }
 
     esp_err_t err = ESP_OK;
-    wifi_ap_record_t *recs = NULL;
+    /* One roam at a time (s_roam_busy), so one static list is enough. */
+    static wifi_ap_record_t recs[ROAM_MAX_APS];
     wifi_ap_record_t cur;
     wifi_config_t cfg;
     if (esp_wifi_sta_get_ap_info(&cur) != ESP_OK
@@ -237,8 +253,11 @@ esp_err_t network_roam_scan(int margin_db, network_roam_t *out)
     fill_ap(&out->before, cur.bssid, cur.primary, cur.rssi);
 
     /* Background scan: the link stays up; the radio returns to its channel between channels. */
+    static uint8_t ssid[sizeof(cfg.sta.ssid) + 1];
+    memcpy(ssid, cfg.sta.ssid, sizeof(cfg.sta.ssid));
+    ssid[sizeof(cfg.sta.ssid)] = 0;
     wifi_scan_config_t scan = {
-        .ssid = cfg.sta.ssid,
+        .ssid = ssid,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
@@ -247,14 +266,9 @@ esp_err_t network_roam_scan(int margin_db, network_roam_t *out)
         goto done;
     }
     uint16_t n = ROAM_MAX_APS;
-    recs = calloc(n, sizeof(*recs));
-    if (!recs) {
-        esp_wifi_clear_ap_list();
-        err = ESP_ERR_NO_MEM;
-        goto done;
-    }
     err = esp_wifi_scan_get_ap_records(&n, recs);
     if (err != ESP_OK) {
+        esp_wifi_clear_ap_list(); /* required after a failed read (esp_wifi.h) */
         goto done;
     }
     out->aps_found = n;
@@ -282,11 +296,12 @@ esp_err_t network_roam_scan(int margin_db, network_roam_t *out)
         s_roam_cfg.sta.bssid_set = true;
         memcpy(s_roam_cfg.sta.bssid, recs[best].bssid, sizeof(s_roam_cfg.sta.bssid));
         s_roam_cfg.sta.channel = recs[best].primary;
+        /* Stop at the chosen BSSID (scan starts on its channel). */
+        s_roam_cfg.sta.scan_method = WIFI_FAST_SCAN;
         out->moving = true;
     }
 
 done:
-    free(recs);
     if (!out->moving) {
         roam_release();
     }
@@ -295,17 +310,29 @@ done:
 
 esp_err_t network_roam_move(void)
 {
+    /* The link may have dropped since the scan; the auto-reconnect owns it then. */
+    wifi_ap_record_t cur;
+    if (esp_wifi_sta_get_ap_info(&cur) != ESP_OK) {
+        ESP_LOGW(TAG, "roam cancelled: not connected any more");
+        roam_release();
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "moving to %02X:%02X:%02X:%02X:%02X:%02X ch %u", s_roam_cfg.sta.bssid[0],
              s_roam_cfg.sta.bssid[1], s_roam_cfg.sta.bssid[2], s_roam_cfg.sta.bssid[3],
              s_roam_cfg.sta.bssid[4], s_roam_cfg.sta.bssid[5], s_roam_cfg.sta.channel);
+    portENTER_CRITICAL(&s_mux);
     s_roam_leaving = true;
     s_pinned = true;
+    portEXIT_CRITICAL(&s_mux);
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &s_roam_cfg);
     if (err == ESP_OK) {
         err = esp_wifi_disconnect();
     }
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "roam failed: %s", esp_err_to_name(err));
+        portENTER_CRITICAL(&s_mux);
         s_roam_leaving = false;
+        portEXIT_CRITICAL(&s_mux);
         unpin();
     }
     roam_release();

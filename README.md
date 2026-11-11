@@ -60,6 +60,7 @@ Try the endpoints from the onboard Swagger page at `/swagger` or see the screens
 |---|---|---|
 | GET | `/api/v1/sensors` | all cached readings |
 | GET | `/api/v1/sensors/{channel}` | one reading, channel 1–8 |
+| GET | `/api/v1/logs` | last 8 KB of the log, kept across software resets, crashes, watchdogs and brownouts (not power loss); routine Wi-Fi driver lines left out |
 | GET | `/api/v1/status` | firmware, uptime, mode, Wi-Fi link and disconnects, open connections, free memory |
 | GET | `/api/v1/config` | network (without password) and channel config |
 | PUT | `/api/v1/config/network` | update Wi-Fi and IPv4 config |
@@ -96,7 +97,7 @@ A capture on the office unit showed Node-RED's HTTP request node (default settin
 
 `resetReason` gives the cause of the last start (`power-on`, `software` for reboot/OTA, `panic` or a `*-watchdog` for a crash, `brownout`, `usb`...).
 
-For the Wi-Fi link it reports `wifiRssi`, `wifiBssid` and `wifiChannel` of the access point in use, `wifiDisconnects` (losses of an established link since boot), `wifiConnectFailures` (failed connect attempts), and `wifiLastDisconnectReason` (ESP-IDF `wifi_err_reason_t`) with `wifiLastDisconnectUptime` (`uptimeSeconds` of the last loss, -1 if none). On each connect the station scans every channel and joins the strongest access point with the SSID.
+For the Wi-Fi link it reports `wifiRssi`, `wifiBssid` and `wifiChannel` of the access point in use, `wifiDisconnects` (losses of an established link since boot), `wifiConnectFailures` (failed connect attempts), `wifiRoams` (moves made by join-strongest-ap, not counted as disconnects), and `wifiLastDisconnectReason` (ESP-IDF `wifi_err_reason_t`) with `wifiLastDisconnectUptime` (`uptimeSeconds` of the last loss, -1 if none). On each connect the station scans every channel and joins the strongest access point with the SSID.
 
 ## Build and flash
 
