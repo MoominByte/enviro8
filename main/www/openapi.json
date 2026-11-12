@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Enviro8 API",
-    "version": "1.2.6",
+    "version": "1.2.7",
     "description": "API REST JSON de la passerelle Enviro8 (XIAO ESP32-C6).\n\n**Unités**\n- Température et offsets : °C\n- Humidité et offsets : %RH\n- `lastReadMs` : millisecondes monotones depuis le démarrage\n\n**Canaux**\nCH1–CH8 correspondent aux ports 0–7 du TCA9548A.\n\n**Réseau**\nLe mot de passe Wi-Fi est en écriture seule : il n’est jamais renvoyé. Un changement réseau est enregistré tout de suite mais s’applique après reboot.\n\n**Utilisation**\nLes lectures sont mises en cache par la tâche de polling (~1 s). Température et humidité (brutes et corrigées) sont une moyenne glissante sur 10 s, remise à zéro après une erreur ou une redétection. `GET` ne déclenche pas une mesure I²C. `POST /api/v1/sensors/detect` force une redétection au cycle suivant.\n\n**Connexions**\nL’appareil accepte 8 connexions HTTP au total ; au-delà, il ferme celle dont la dernière requête est la plus ancienne. Chaque appareil client (adresse IP) garde jusqu’à 2 connexions réutilisables (keep-alive). Sur une 3e connexion ou plus, une réponse JSON ferme la connexion (`Connection: close`) ; les pages HTML et les réponses d’erreur ne sont pas concernées."
   },
   "servers": [
@@ -15,7 +15,8 @@
     { "name": "Sensors", "description": "Lectures en cache et détection" },
     { "name": "Status", "description": "État du firmware et du Wi-Fi" },
     { "name": "Config", "description": "Réseau et configuration des canaux" },
-    { "name": "Device", "description": "Redémarrage, reset usine et mise à jour firmware" }
+    { "name": "Device", "description": "Redémarrage, reset usine et mise à jour firmware" },
+    { "name": "Connectivity", "description": "Liens radio : Wi-Fi (et Bluetooth s’il est activé)" }
   ],
   "paths": {
     "/api/v1/sensors": {
@@ -97,7 +98,7 @@
       "get": {
         "tags": ["Status"],
         "summary": "État de l’appareil",
-        "description": "`networkMode` vaut `setup-ap` (SoftAP Enviro8-Setup) ou `station`. `wifiRssi` est 0 en SoftAP. Les compteurs de connexions et de mémoire servent au diagnostic.",
+        "description": "`networkMode` vaut `setup-ap` (SoftAP Enviro8-Setup) ou `station`. `wifiRssi`, `wifiChannel` valent 0 et `wifiBssid` est vide en SoftAP ou hors connexion. Les compteurs de connexions et de mémoire servent au diagnostic.",
         "operationId": "getStatus",
         "responses": {
           "200": {
@@ -107,6 +108,20 @@
                 "schema": { "$ref": "#/components/schemas/Status" }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/logs": {
+      "get": {
+        "tags": ["Status"],
+        "summary": "Journal récent",
+        "description": "Dernières lignes du journal ESP_LOG (8 Ko, les plus anciennes d’abord), gardées en mémoire LP. Elles survivent à un redémarrage logiciel, un plantage, un watchdog ou une baisse de tension (brownout), pas à une coupure de courant. Les lignes de routine du pilote Wi-Fi n’y sont pas : seuls ses avertissements, erreurs, et ses lignes de canal (`new:<…>`), de changement d’état, de connexion et de sécurité. Chaque démarrage ajoute une ligne `=== boot N, reset reason … ===`. La trace d’un plantage (backtrace) n’y est pas : elle ne sort que sur le port série.",
+        "operationId": "getLogs",
+        "responses": {
+          "200": {
+            "description": "Texte brut, une ligne par entrée",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
           }
         }
       }
@@ -247,6 +262,27 @@
         }
       }
     },
+    "/api/v1/wifi/join-strongest-ap": {
+      "post": {
+        "tags": ["Connectivity"],
+        "summary": "Rejoindre le point d’accès le plus fort",
+        "description": "Itinérance (roaming) sur demande. Balaye en arrière-plan tous les canaux pour le SSID configuré, sans couper la connexion. Change de point d’accès seulement si le plus fort dépasse l’actuel d’au moins `marginDb` (6 dB) : la réponse part d’abord, puis le lien Wi-Fi coupe quelques secondes, sans redémarrage, et toutes les connexions TCP ouvertes vers l’appareil sont fermées. Sinon rien ne change. Pas de corps. Le point d’accès choisi est gardé jusqu’à la prochaine coupure, après quoi le choix normal (le plus fort au balayage) reprend.",
+        "operationId": "joinStrongestAp",
+        "responses": {
+          "200": {
+            "description": "Balayage fait ; `moving` dit si l’appareil va changer de point d’accès",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/JoinStrongestApResponse" }
+              }
+            }
+          },
+          "409": { "description": "Pas connecté au Wi-Fi (ou en SoftAP), ou une demande est déjà en cours" },
+          "413": { "description": "Corps de plus de 256 octets. Pas de corps attendu ; un petit corps est lu et ignoré" },
+          "500": { "description": "Échec du balayage ou du changement" }
+        }
+      }
+    },
     "/api/v1/factory-reset": {
       "post": {
         "tags": ["Device"],
@@ -336,7 +372,19 @@
         "properties": {
           "firmwareVersion": { "type": "string", "example": "1.1.0" },
           "uptimeSeconds": { "type": "integer" },
+          "resetReason": {
+            "type": "string",
+            "description": "Cause du dernier démarrage (esp_reset_reason). `software` : redémarrage demandé (reboot, OTA, rollback) ; `panic`, `*-watchdog`, `cpu-lockup` : plantage ; `power-on` : mise sous tension ; `brownout`, `power-glitch` : alimentation trop basse ; `usb` : reset par le port USB.",
+            "enum": ["power-on", "external-pin", "software", "panic", "interrupt-watchdog", "task-watchdog", "other-watchdog", "deep-sleep", "brownout", "sdio", "usb", "jtag", "efuse", "power-glitch", "cpu-lockup", "unknown"]
+          },
           "wifiRssi": { "type": "integer", "description": "dBm en station, 0 en SoftAP" },
+          "wifiBssid": { "type": "string", "description": "Adresse MAC du point d’accès utilisé, vide si non associé" },
+          "wifiChannel": { "type": "integer", "description": "Canal Wi-Fi du point d’accès, 0 si non associé" },
+          "wifiDisconnects": { "type": "integer", "description": "Pertes d’une connexion Wi-Fi établie depuis le démarrage" },
+          "wifiConnectFailures": { "type": "integer", "description": "Tentatives de connexion Wi-Fi échouées depuis le démarrage" },
+          "wifiRoams": { "type": "integer", "description": "Départs volontaires vers un autre point d’accès par join-strongest-ap depuis le démarrage, même si la reconnexion revient sur le même (pas comptés dans wifiDisconnects)" },
+          "wifiLastDisconnectReason": { "type": "integer", "description": "Code de raison ESP-IDF (wifi_err_reason_t) de la dernière déconnexion, 0 si aucune" },
+          "wifiLastDisconnectUptime": { "type": "integer", "description": "uptimeSeconds au moment de la dernière déconnexion, -1 si aucune" },
           "networkMode": { "type": "string", "enum": ["setup-ap", "station"] },
           "firmwarePartition": { "type": "string", "enum": ["ota_0", "ota_1"] },
           "firmwarePendingVerify": { "type": "boolean", "description": "Vrai juste après une mise à jour, jusqu’à la confirmation" },
@@ -345,6 +393,24 @@
           "closedReplies": { "type": "integer", "description": "Réponses après lesquelles la connexion a été fermée (réponse JSON sur la 3e connexion ou plus d’un appareil)" },
           "freeHeap": { "type": "integer", "description": "Mémoire libre, octets" },
           "minFreeHeap": { "type": "integer", "description": "Plus bas niveau de mémoire libre depuis le démarrage, octets" }
+        }
+      },
+      "AccessPoint": {
+        "type": "object",
+        "properties": {
+          "bssid": { "type": "string", "description": "Adresse MAC du point d’accès, vide si non connecté" },
+          "channel": { "type": "integer" },
+          "rssi": { "type": "integer", "description": "dBm" }
+        }
+      },
+      "JoinStrongestApResponse": {
+        "type": "object",
+        "properties": {
+          "before": { "$ref": "#/components/schemas/AccessPoint" },
+          "best": { "$ref": "#/components/schemas/AccessPoint" },
+          "apsFound": { "type": "integer", "description": "Points d’accès trouvés avec le SSID" },
+          "marginDb": { "type": "integer", "description": "Écart minimal pour changer, dB" },
+          "moving": { "type": "boolean", "description": "Vrai : l’appareil change de point d’accès juste après cette réponse ; voir `wifiBssid` dans /api/v1/status quelques secondes plus tard" }
         }
       },
       "NetworkConfig": {

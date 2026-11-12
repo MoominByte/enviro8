@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "log_buffer.h"
 #include "network.h"
 #include "ota.h"
 #include "sensor_manager.h"
@@ -271,12 +272,37 @@ static esp_err_t sensor_get(httpd_req_t *req)
     return json_send(req, reading_json(channel - 1));
 }
 
+static esp_err_t logs_get(httpd_req_t *req)
+{
+    const size_t cap = log_buffer_size();
+    char *buf = malloc(cap);
+    if (!buf) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+    const size_t len = log_buffer_copy(buf, cap);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, buf, (ssize_t)len);
+    free(buf);
+    return err;
+}
+
 static esp_err_t status_get(httpd_req_t *req)
 {
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "firmwareVersion", APP_VERSION);
     cJSON_AddNumberToObject(json, "uptimeSeconds", (double)(esp_timer_get_time() / 1000000));
-    cJSON_AddNumberToObject(json, "wifiRssi", network_rssi());
+    cJSON_AddStringToObject(json, "resetReason", reset_reason_name(esp_reset_reason()));
+    network_wifi_status_t wifi;
+    network_wifi_status(&wifi);
+    cJSON_AddNumberToObject(json, "wifiRssi", wifi.rssi);
+    cJSON_AddStringToObject(json, "wifiBssid", wifi.bssid);
+    cJSON_AddNumberToObject(json, "wifiChannel", wifi.channel);
+    cJSON_AddNumberToObject(json, "wifiDisconnects", wifi.disconnects);
+    cJSON_AddNumberToObject(json, "wifiConnectFailures", wifi.connect_failures);
+    cJSON_AddNumberToObject(json, "wifiRoams", wifi.roams);
+    cJSON_AddNumberToObject(json, "wifiLastDisconnectReason", wifi.last_reason);
+    cJSON_AddNumberToObject(json, "wifiLastDisconnectUptime", wifi.last_disconnect_s);
     cJSON_AddStringToObject(json, "networkMode", network_mode());
     cJSON_AddStringToObject(json, "firmwarePartition", ota_running_partition());
     cJSON_AddBoolToObject(json, "firmwarePendingVerify", ota_pending_verify());
@@ -450,10 +476,96 @@ static esp_err_t action_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+#define ROAM_MARGIN_DB      6
+#define ROAM_MAX_BODY       256 /* the endpoint takes no body; tolerate a small one */
+
+static void ap_json(cJSON *parent, const char *name, const network_ap_t *ap)
+{
+    cJSON *o = cJSON_AddObjectToObject(parent, name);
+    cJSON_AddStringToObject(o, "bssid", ap->bssid);
+    cJSON_AddNumberToObject(o, "channel", ap->channel);
+    cJSON_AddNumberToObject(o, "rssi", ap->rssi);
+}
+
+static void roam_task(void *arg)
+{
+    httpd_req_t *req = arg;
+    network_roam_t r;
+    const esp_err_t err = network_roam_scan(ROAM_MARGIN_DB, &r);
+
+    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_NOT_FINISHED) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, err == ESP_ERR_NOT_FINISHED ? "already running"
+                                                            : "not connected to Wi-Fi");
+    } else if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(err));
+    } else {
+        cJSON *json = cJSON_CreateObject();
+        ap_json(json, "before", &r.before);
+        ap_json(json, "best", &r.best);
+        cJSON_AddNumberToObject(json, "apsFound", r.aps_found);
+        cJSON_AddNumberToObject(json, "marginDb", ROAM_MARGIN_DB);
+        cJSON_AddBoolToObject(json, "moving", r.moving);
+        if (json_send(req, json) == ESP_FAIL) {
+            /* Crowded: json_send relies on a handler error to close, which an async task lacks. */
+            httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+        }
+    }
+    httpd_req_async_handler_complete(req);
+
+    if (r.moving) {
+        /* Like reboot: let the reply leave before the link drops. */
+        vTaskDelay(pdMS_TO_TICKS(200));
+        network_roam_move();
+    }
+    vTaskDelete(NULL);
+}
+
+/* The scan takes a while: run it off the server task so other clients keep being served. */
+static esp_err_t join_strongest_post(httpd_req_t *req)
+{
+    /*
+     * The async copy stops httpd from purging the body, so read it here or
+     * its bytes would be parsed as the next request on this connection.
+     */
+    if (req->content_len > ROAM_MAX_BODY) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        httpd_resp_sendstr(req, "body too large (max 256 bytes, ignored)");
+        /* ESP_OK: httpd discards the body itself (same 10 s limit per read). */
+        return ESP_OK;
+    }
+    /*
+     * httpd has one task: give up at the first 10 s receive timeout on a
+     * client that sent part of its body and stalled (with no body byte at
+     * all, httpd answers 408 itself before this handler runs).
+     */
+    char sink[64];
+    int left = (int)req->content_len;
+    while (left > 0) {
+        int r = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
+        if (r <= 0) {
+            return ESP_FAIL;
+        }
+        left -= r;
+    }
+    httpd_req_t *copy = NULL;
+    if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy");
+    }
+    if (xTaskCreate(roam_task, "roam", 6144, copy, 5, NULL) != pdPASS) {
+        httpd_req_async_handler_complete(copy);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+    return ESP_OK;
+}
+
 esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 24; /* 19 used */
     cfg.stack_size = 8192;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     /*
@@ -488,6 +600,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/sensors", .method = HTTP_GET, .handler = sensors_get},
         {.uri = "/api/v1/sensors/*", .method = HTTP_GET, .handler = sensor_get},
         {.uri = "/api/v1/status", .method = HTTP_GET, .handler = status_get},
+        {.uri = "/api/v1/logs", .method = HTTP_GET, .handler = logs_get},
         {.uri = "/api/v1/config", .method = HTTP_GET, .handler = config_get},
         {.uri = "/api/v1/config/network", .method = HTTP_PUT, .handler = network_put},
         {.uri = "/api/v1/config/channels", .method = HTTP_PUT, .handler = channels_put},
@@ -495,6 +608,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/reboot", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/factory-reset", .method = HTTP_POST, .handler = action_post},
         {.uri = "/api/v1/firmware", .method = HTTP_POST, .handler = ota_upload_handler},
+        {.uri = "/api/v1/wifi/join-strongest-ap", .method = HTTP_POST, .handler = join_strongest_post},
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
