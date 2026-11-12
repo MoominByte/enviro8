@@ -360,17 +360,23 @@ esp_err_t network_roam_move(void)
     }
 
     /*
-     * Only the DISCONNECTED handler restarts the connection. If our leave
-     * cancelled a reconnect already under way and no event follows, nothing
-     * would; after ROAM_RECOVER_S without a link, clear the move and connect.
+     * Only the DISCONNECTED handler restarts the connection. Safety net, not
+     * a path seen on the device: if no link comes back within ROAM_RECOVER_S,
+     * unpin and connect. While the driver is already connecting,
+     * esp_wifi_connect() returns ESP_ERR_WIFI_CONN and changes nothing.
      */
     for (int i = 0; i < ROAM_RECOVER_S && !network_connected(); i++) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    /*
+     * Our leave's event has been handled by now, or will never come (e.g. the
+     * leave hit a connect under way and was reported with another reason).
+     * Clear the flag either way so a later AP-sent reason 8 is not a roam.
+     */
+    portENTER_CRITICAL(&s_mux);
+    s_roam_leaving = false;
+    portEXIT_CRITICAL(&s_mux);
     if (!network_connected()) {
-        portENTER_CRITICAL(&s_mux);
-        s_roam_leaving = false;
-        portEXIT_CRITICAL(&s_mux);
         ESP_LOGW(TAG, "no link %d s after the move, reconnecting", ROAM_RECOVER_S);
         if (s_pinned) {
             unpin();

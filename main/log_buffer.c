@@ -81,7 +81,7 @@ static size_t s_pending_len;
 static bool s_dropping; /* inside a dropped line until its '\n' */
 /* Task writing the held or dropped line; other tasks' lines pass straight through. */
 static TaskHandle_t s_owner;
-/* A truncated wifi text already ended its line; skip the driver's "\n". */
+/* A wifi text already ended its line (cut by log_hook, or its own '\n'); skip a lone "\n" after it. */
 static bool s_skip_nl;
 
 static bool is_wifi_info(const char *s)
@@ -120,7 +120,7 @@ static void store(const char *s, size_t len)
         } else {
             s_dropping = !ends_line;
         }
-        s_skip_nl = ends_line; /* the text was cut and given its own '\n' */
+        s_skip_nl = ends_line; /* the text ended the line (its own '\n' or cut by log_hook) */
         s_pending_len = 0;
         return;
     }

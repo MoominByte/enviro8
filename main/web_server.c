@@ -478,7 +478,6 @@ static esp_err_t action_post(httpd_req_t *req)
 
 #define ROAM_MARGIN_DB      6
 #define ROAM_MAX_BODY       256 /* the endpoint takes no body; tolerate a small one */
-#define ROAM_BODY_TIMEOUTS  0   /* give up at the first 10 s recv timeout, like httpd's own purge */
 
 static void ap_json(cJSON *parent, const char *name, const network_ap_t *ap)
 {
@@ -538,15 +537,15 @@ static esp_err_t join_strongest_post(httpd_req_t *req)
         /* ESP_OK: httpd discards the body itself (same 10 s limit per read). */
         return ESP_OK;
     }
-    /* httpd has one task: give up on a client that announces a body and stalls. */
+    /*
+     * httpd has one task: give up at the first 10 s receive timeout on a
+     * client that sent part of its body and stalled (with no body byte at
+     * all, httpd answers 408 itself before this handler runs).
+     */
     char sink[64];
     int left = (int)req->content_len;
-    int timeouts = 0;
     while (left > 0) {
         int r = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
-        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts <= ROAM_BODY_TIMEOUTS) {
-            continue;
-        }
         if (r <= 0) {
             return ESP_FAIL;
         }
